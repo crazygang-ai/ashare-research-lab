@@ -4,6 +4,8 @@ from typing import Any
 
 import typer
 
+from ashare.storage.db import default_schema_path, init_db
+
 app = typer.Typer(help="A-share research assistant CLI.")
 
 
@@ -78,3 +80,14 @@ def stock_report(
     """Print stock-report parameters without writing reports."""
     _echo_todo("stock-report", code=code, as_of=as_of)
 
+
+@app.command(name="db-init")
+def db_init(
+    db_path: str = typer.Option("data/processed/ashare.duckdb", "--db-path"),
+    schema_path: str | None = typer.Option(None, "--schema-path"),
+) -> None:
+    """Initialize the DuckDB database schema."""
+    resolved_schema_path = default_schema_path() if schema_path is None else schema_path
+    init_db(db_path=db_path, schema_path=schema_path)
+    typer.echo(f"Initialized DuckDB database: {db_path}")
+    typer.echo(f"Schema path: {resolved_schema_path}")
