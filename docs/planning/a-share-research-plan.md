@@ -310,14 +310,21 @@ trading_calendar
   trade_date, is_open, prev_trade_date, next_trade_date
 
 securities
-  stock_code, stock_name, exchange, list_date, delist_date
+  stock_code, stock_name, exchange, list_date, delist_date,
+  delist_publish_time, delist_effective_date
 
 industry_classifications
   stock_code, industry_standard, industry_l1, industry_l2,
-  in_date, out_date, version, source
+  in_date, out_date,
+  in_publish_time, in_effective_date,
+  out_publish_time, out_effective_date,
+  version, source
 
 universe_members
-  index_code, stock_code, in_date, out_date, source
+  index_code, stock_code, in_date, out_date,
+  in_publish_time, in_effective_date,
+  out_publish_time, out_effective_date,
+  source
 
 daily_prices
   stock_code, trade_date, open, high, low, close,
@@ -325,7 +332,10 @@ daily_prices
   limit_up, limit_down
 
 st_status
-  stock_code, st_type, in_date, out_date, source
+  stock_code, st_type, in_date, out_date,
+  in_publish_time, in_effective_date,
+  out_publish_time, out_effective_date,
+  source
 
 fundamental_reports
   stock_code, report_period, publish_time, effective_date,
@@ -356,7 +366,7 @@ research_runs
   started_at, finished_at, error
 ```
 
-行业分类第一版建议固定一种标准，例如申万一级 / 二级行业。行业分类会调整，所以必须像指数成分一样保存 `in_date`、`out_date` 和 `version`，回测时只能使用 `as_of_date` 当时有效的行业分类。
+行业分类第一版建议固定一种标准，例如申万一级 / 二级行业。行业分类会调整，所以必须像指数成分一样保存 `in_date`、`out_date`、进入 / 退出的 `publish_time` 与 `effective_date`，以及 `version`，回测时只能使用 `as_of_date` 当时已经披露且生效的行业分类。
 
 快照方案第一版建议：
 
@@ -366,9 +376,9 @@ research_runs
 - 正式研究运行写入 `research_runs`，记录完整 CLI 参数、配置哈希、数据快照 ID 和 `git_sha`。
 - 正式 `run_id` 要求 git 工作区干净；探索性运行可以放宽，但必须标记为非正式结果。
 
-`industry_classifications` 的一条记录表示：在分类标准 `industry_standard` 的 `version` 版本下，`stock_code` 在 `[in_date, out_date)` 期间被划入 `industry_l1` / `industry_l2`。`as_of_date` 使用哪个行业版本由配置决定，第一版默认固定一个版本，例如 `sw_2021`。
+`industry_classifications` 的一条记录表示：在分类标准 `industry_standard` 的 `version` 版本下，`stock_code` 在 `[in_date, out_date)` 期间被划入 `industry_l1` / `industry_l2`。`in_effective_date` 与 `out_effective_date` 表示进入 / 退出信息对研究系统可见的日期；缺失时分别回退到 `in_date` 与 `out_date`。`as_of_date` 使用哪个行业版本由配置决定，第一版默认固定一个版本，例如 `sw_2021`。
 
-`st_status` 像指数成分一样保存时间区间状态。`st_type` 可取 `ST`、`*ST`、`退市风险警示` 等，`is_st` 在某个 `as_of_date` 的取值由这张表按区间查询得到，不能用当前股票名称或当前状态倒推历史。
+`st_status` 像指数成分一样保存时间区间状态，并记录进入 / 退出 ST 状态的披露时间与可见生效日期。`st_type` 可取 `ST`、`*ST`、`退市风险警示` 等，`is_st` 在某个 `as_of_date` 的取值由这张表按区间查询得到，不能用当前股票名称或当前状态倒推历史。
 
 `risk_events` 保存质押、减持、问询函、监管处罚、非标审计意见等风险事件流。`event_type` 可取 `pledge`、`shareholder_reduce`、`inquiry_letter`、`regulatory_penalty`、`non_standard_audit` 等。`recent_big_shareholder_reduce`、`inquiry_letter_count`、`pledge_ratio` 这类字段是基于 `risk_events` 在 `as_of_date` 的历史窗口聚合得到的因子值，不是直接手写字段。
 

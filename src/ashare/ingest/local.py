@@ -28,7 +28,15 @@ TABLE_ORDER = (
 
 TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "trading_calendar": ("trade_date", "is_open", "prev_trade_date", "next_trade_date"),
-    "securities": ("stock_code", "stock_name", "exchange", "list_date", "delist_date"),
+    "securities": (
+        "stock_code",
+        "stock_name",
+        "exchange",
+        "list_date",
+        "delist_date",
+        "delist_publish_time",
+        "delist_effective_date",
+    ),
     "industry_classifications": (
         "stock_code",
         "industry_standard",
@@ -36,10 +44,24 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "industry_l2",
         "in_date",
         "out_date",
+        "in_publish_time",
+        "in_effective_date",
+        "out_publish_time",
+        "out_effective_date",
         "version",
         "source",
     ),
-    "universe_members": ("index_code", "stock_code", "in_date", "out_date", "source"),
+    "universe_members": (
+        "index_code",
+        "stock_code",
+        "in_date",
+        "out_date",
+        "in_publish_time",
+        "in_effective_date",
+        "out_publish_time",
+        "out_effective_date",
+        "source",
+    ),
     "daily_prices": (
         "stock_code",
         "trade_date",
@@ -54,7 +76,17 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "limit_up",
         "limit_down",
     ),
-    "st_status": ("stock_code", "st_type", "in_date", "out_date", "source"),
+    "st_status": (
+        "stock_code",
+        "st_type",
+        "in_date",
+        "out_date",
+        "in_publish_time",
+        "in_effective_date",
+        "out_publish_time",
+        "out_effective_date",
+        "source",
+    ),
     "valuation_daily": (
         "stock_code",
         "trade_date",
@@ -107,19 +139,75 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 PUBLISH_TABLES = {"fundamental_reports", "announcements", "risk_events"}
+VISIBILITY_TABLES = {
+    "securities",
+    "industry_classifications",
+    "universe_members",
+    "st_status",
+}
+OPTIONAL_INPUT_COLUMNS: dict[str, set[str]] = {
+    "securities": {"delist_publish_time", "delist_effective_date"},
+    "industry_classifications": {
+        "in_publish_time",
+        "in_effective_date",
+        "out_publish_time",
+        "out_effective_date",
+    },
+    "universe_members": {
+        "in_publish_time",
+        "in_effective_date",
+        "out_publish_time",
+        "out_effective_date",
+    },
+    "st_status": {
+        "in_publish_time",
+        "in_effective_date",
+        "out_publish_time",
+        "out_effective_date",
+    },
+    "fundamental_reports": {"effective_date"},
+    "announcements": {"effective_date"},
+    "risk_events": {"effective_date"},
+}
+EFFECTIVE_DATE_RULES: dict[str, tuple[tuple[str, str, str | None], ...]] = {
+    "securities": (("delist_effective_date", "delist_publish_time", "delist_date"),),
+    "industry_classifications": (
+        ("in_effective_date", "in_publish_time", "in_date"),
+        ("out_effective_date", "out_publish_time", "out_date"),
+    ),
+    "universe_members": (
+        ("in_effective_date", "in_publish_time", "in_date"),
+        ("out_effective_date", "out_publish_time", "out_date"),
+    ),
+    "st_status": (
+        ("in_effective_date", "in_publish_time", "in_date"),
+        ("out_effective_date", "out_publish_time", "out_date"),
+    ),
+    "fundamental_reports": (("effective_date", "publish_time", None),),
+    "announcements": (("effective_date", "publish_time", None),),
+    "risk_events": (("effective_date", "publish_time", None),),
+}
 DATE_COLUMNS = {
     "trade_date",
     "prev_trade_date",
     "next_trade_date",
     "list_date",
     "delist_date",
+    "delist_effective_date",
     "in_date",
     "out_date",
+    "in_effective_date",
+    "out_effective_date",
     "report_period",
     "effective_date",
     "event_date",
 }
-TIMESTAMP_COLUMNS = {"publish_time"}
+TIMESTAMP_COLUMNS = {
+    "publish_time",
+    "delist_publish_time",
+    "in_publish_time",
+    "out_publish_time",
+}
 BOOL_COLUMNS = {"is_open", "is_suspended"}
 INT_COLUMNS = {"volume"}
 FLOAT_COLUMNS = {
@@ -166,7 +254,8 @@ def ingest_local(input_dir: str | Path, db_path: str | Path) -> dict[str, int]:
         _load_json_extension_if_available(connection)
         connection.execute("BEGIN TRANSACTION")
         for table in TABLE_ORDER:
-            trading_days = _open_trading_days(connection) if table in PUBLISH_TABLES else None
+            needs_trading_days = table in PUBLISH_TABLES or table in VISIBILITY_TABLES
+            trading_days = _open_trading_days(connection) if needs_trading_days else None
             rows = _read_csv_rows(input_dir / f"{table}.csv", table, trading_days)
             connection.execute(f"DELETE FROM {table}")
             _insert_rows(connection, table, rows)
@@ -206,10 +295,16 @@ def _validate_header(table: str, fieldnames: list[str] | None) -> None:
     if fieldnames is None:
         raise ValueError(f"{table}.csv is empty.")
 
-    expected_columns = [column for column in TABLE_COLUMNS[table] if column != "effective_date"]
-    if fieldnames != expected_columns:
+    expected_columns = set(TABLE_COLUMNS[table])
+    optional_columns = OPTIONAL_INPUT_COLUMNS.get(table, set())
+    required_columns = expected_columns - optional_columns
+    actual_columns = set(fieldnames)
+
+    missing = sorted(required_columns - actual_columns)
+    unexpected = sorted(actual_columns - expected_columns)
+    if missing or unexpected:
         raise ValueError(
-            f"{table}.csv columns must be {expected_columns}; got {fieldnames}."
+            f"{table}.csv columns are invalid; missing {missing}, unexpected {unexpected}."
         )
 
 
@@ -220,14 +315,26 @@ def _convert_row(
 ) -> dict[str, Any]:
     row: dict[str, Any] = {}
     for column in TABLE_COLUMNS[table]:
-        if column == "effective_date" and table in PUBLISH_TABLES:
+        row[column] = _convert_value(column, raw_row.get(column, ""))
+
+    _fill_effective_dates(table, row, trading_days)
+    return row
+
+
+def _fill_effective_dates(
+    table: str,
+    row: dict[str, Any],
+    trading_days: list[date] | None,
+) -> None:
+    for effective_column, publish_column, fallback_column in EFFECTIVE_DATE_RULES.get(table, ()):
+        if row[effective_column] is not None:
+            continue
+        if row[publish_column] is not None:
             if trading_days is None:
                 raise ValueError(f"Trading calendar must be loaded before {table}.")
-            publish_time = _convert_value("publish_time", raw_row["publish_time"])
-            row[column] = calculate_effective_date(publish_time, trading_days)
-        else:
-            row[column] = _convert_value(column, raw_row.get(column, ""))
-    return row
+            row[effective_column] = calculate_effective_date(row[publish_column], trading_days)
+        elif fallback_column is not None:
+            row[effective_column] = row[fallback_column]
 
 
 def _convert_value(column: str, value: str) -> Any:

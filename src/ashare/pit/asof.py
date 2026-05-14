@@ -121,16 +121,44 @@ def query_universe_members_as_of(
             stock_code,
             in_date,
             CASE
-                WHEN out_date IS NOT NULL AND out_date <= ?
+                WHEN out_date IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
                 THEN out_date
                 ELSE NULL
             END AS out_date,
+            in_publish_time,
+            in_effective_date,
+            CASE
+                WHEN out_publish_time IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
+                THEN out_publish_time
+                ELSE NULL
+            END AS out_publish_time,
+            CASE
+                WHEN out_effective_date IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
+                THEN out_effective_date
+                ELSE NULL
+            END AS out_effective_date,
             source
         FROM universe_members
         WHERE in_date <= ?
-          AND (out_date IS NULL OR ? < out_date)
+          AND COALESCE(in_effective_date, in_date) <= ?
+          AND (
+              out_date IS NULL
+              OR ? < out_date
+              OR COALESCE(out_effective_date, out_date) > ?
+          )
     """
-    params: list[Any] = [parsed_date, parsed_date, parsed_date]
+    params: list[Any] = [
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+    ]
     if index_code is not None:
         sql += " AND index_code = ?"
         params.append(index_code)
@@ -157,17 +185,48 @@ def query_securities_as_of(
             exchange,
             list_date,
             CASE
-                WHEN delist_date IS NOT NULL AND delist_date <= ?
+                WHEN delist_date IS NOT NULL
+                 AND COALESCE(delist_effective_date, delist_date) <= ?
                 THEN delist_date
                 ELSE NULL
             END AS delist_date,
-            (delist_date IS NOT NULL AND delist_date <= ?) AS is_delisted_as_of
+            CASE
+                WHEN delist_publish_time IS NOT NULL
+                 AND COALESCE(delist_effective_date, delist_date) <= ?
+                THEN delist_publish_time
+                ELSE NULL
+            END AS delist_publish_time,
+            CASE
+                WHEN delist_effective_date IS NOT NULL
+                 AND COALESCE(delist_effective_date, delist_date) <= ?
+                THEN delist_effective_date
+                ELSE NULL
+            END AS delist_effective_date,
+            (
+                delist_date IS NOT NULL
+                AND delist_date <= ?
+                AND COALESCE(delist_effective_date, delist_date) <= ?
+            ) AS is_delisted_as_of
         FROM securities
         WHERE list_date <= ?
     """
-    params: list[Any] = [parsed_date, parsed_date, parsed_date]
+    params: list[Any] = [
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+    ]
     if not include_delisted:
-        sql += " AND (delist_date IS NULL OR delist_date > ?)"
+        sql += """
+          AND NOT (
+              delist_date IS NOT NULL
+              AND delist_date <= ?
+              AND COALESCE(delist_effective_date, delist_date) <= ?
+          )
+        """
+        params.append(parsed_date)
         params.append(parsed_date)
     if stock_code is not None:
         sql += " AND stock_code = ?"
@@ -190,16 +249,44 @@ def query_st_status_as_of(
             st_type,
             in_date,
             CASE
-                WHEN out_date IS NOT NULL AND out_date <= ?
+                WHEN out_date IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
                 THEN out_date
                 ELSE NULL
             END AS out_date,
+            in_publish_time,
+            in_effective_date,
+            CASE
+                WHEN out_publish_time IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
+                THEN out_publish_time
+                ELSE NULL
+            END AS out_publish_time,
+            CASE
+                WHEN out_effective_date IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
+                THEN out_effective_date
+                ELSE NULL
+            END AS out_effective_date,
             source
         FROM st_status
         WHERE in_date <= ?
-          AND (out_date IS NULL OR ? < out_date)
+          AND COALESCE(in_effective_date, in_date) <= ?
+          AND (
+              out_date IS NULL
+              OR ? < out_date
+              OR COALESCE(out_effective_date, out_date) > ?
+          )
     """
-    params: list[Any] = [parsed_date, parsed_date, parsed_date]
+    params: list[Any] = [
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+    ]
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
@@ -225,17 +312,45 @@ def query_industry_classifications_as_of(
             industry_l2,
             in_date,
             CASE
-                WHEN out_date IS NOT NULL AND out_date <= ?
+                WHEN out_date IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
                 THEN out_date
                 ELSE NULL
             END AS out_date,
+            in_publish_time,
+            in_effective_date,
+            CASE
+                WHEN out_publish_time IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
+                THEN out_publish_time
+                ELSE NULL
+            END AS out_publish_time,
+            CASE
+                WHEN out_effective_date IS NOT NULL
+                 AND COALESCE(out_effective_date, out_date) <= ?
+                THEN out_effective_date
+                ELSE NULL
+            END AS out_effective_date,
             version,
             source
         FROM industry_classifications
         WHERE in_date <= ?
-          AND (out_date IS NULL OR ? < out_date)
+          AND COALESCE(in_effective_date, in_date) <= ?
+          AND (
+              out_date IS NULL
+              OR ? < out_date
+              OR COALESCE(out_effective_date, out_date) > ?
+          )
     """
-    params: list[Any] = [parsed_date, parsed_date, parsed_date]
+    params: list[Any] = [
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+        parsed_date,
+    ]
     if industry_standard is not None:
         sql += " AND industry_standard = ?"
         params.append(industry_standard)

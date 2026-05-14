@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS securities (
     stock_name VARCHAR,
     exchange VARCHAR,
     list_date DATE,
-    delist_date DATE
+    delist_date DATE,
+    delist_publish_time TIMESTAMP,
+    delist_effective_date DATE
 );
 
 CREATE TABLE IF NOT EXISTS industry_classifications (
@@ -20,6 +22,10 @@ CREATE TABLE IF NOT EXISTS industry_classifications (
     industry_l2 VARCHAR,
     in_date DATE,
     out_date DATE,
+    in_publish_time TIMESTAMP,
+    in_effective_date DATE,
+    out_publish_time TIMESTAMP,
+    out_effective_date DATE,
     version VARCHAR,
     source VARCHAR
 );
@@ -29,6 +35,10 @@ CREATE TABLE IF NOT EXISTS universe_members (
     stock_code VARCHAR,
     in_date DATE,
     out_date DATE,
+    in_publish_time TIMESTAMP,
+    in_effective_date DATE,
+    out_publish_time TIMESTAMP,
+    out_effective_date DATE,
     source VARCHAR
 );
 
@@ -52,6 +62,10 @@ CREATE TABLE IF NOT EXISTS st_status (
     st_type VARCHAR,
     in_date DATE,
     out_date DATE,
+    in_publish_time TIMESTAMP,
+    in_effective_date DATE,
+    out_publish_time TIMESTAMP,
+    out_effective_date DATE,
     source VARCHAR
 );
 
@@ -131,3 +145,8 @@ CREATE TABLE IF NOT EXISTS research_runs (
     error VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER,
+    applied_at TIMESTAMP,
+    description VARCHAR
+);

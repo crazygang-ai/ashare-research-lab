@@ -38,9 +38,49 @@ def test_fixture_securities_include_five_stocks_and_one_delist(tmp_path: Path) -
     build_fixtures(output_dir)
 
     rows = _read_csv(output_dir / "securities.csv")
+    delist_row = next(row for row in rows if row["stock_code"] == "000003.SZ")
 
     assert len(rows) == 5
     assert sum(1 for row in rows if row["delist_date"]) == 1
+    assert delist_row["delist_publish_time"] == "2026-03-02 18:00:00"
+    assert delist_row["delist_effective_date"] == "2026-03-03"
+
+
+def test_fixture_interval_csvs_include_visibility_fields(tmp_path: Path) -> None:
+    output_dir = tmp_path / "generated"
+    build_fixtures(output_dir)
+
+    securities = _read_csv(output_dir / "securities.csv")
+    universe = _read_csv(output_dir / "universe_members.csv")
+    st_rows = _read_csv(output_dir / "st_status.csv")
+    industry_rows = _read_csv(output_dir / "industry_classifications.csv")
+
+    assert {"delist_publish_time", "delist_effective_date"}.issubset(securities[0])
+    for rows in [universe, st_rows, industry_rows]:
+        assert {
+            "in_publish_time",
+            "in_effective_date",
+            "out_publish_time",
+            "out_effective_date",
+        }.issubset(rows[0])
+
+    delist_member = next(row for row in universe if row["stock_code"] == "000003.SZ")
+    st_row = st_rows[0]
+    industry_switch = [row for row in industry_rows if row["stock_code"] == "000005.SZ"]
+
+    assert delist_member["out_publish_time"] == "2026-03-02 18:00:00"
+    assert delist_member["out_effective_date"] == "2026-03-03"
+    assert st_row["in_publish_time"] == "2026-01-20 18:00:00"
+    assert st_row["in_effective_date"] == "2026-01-21"
+    assert st_row["out_publish_time"] == "2026-02-16 18:00:00"
+    assert st_row["out_effective_date"] == "2026-02-17"
+    assert len(industry_switch) == 2
+    assert industry_switch[0]["industry_l2"] == "Software"
+    assert industry_switch[0]["out_publish_time"] == "2026-02-12 18:00:00"
+    assert industry_switch[0]["out_effective_date"] == "2026-02-13"
+    assert industry_switch[1]["industry_l2"] == "Internet"
+    assert industry_switch[1]["in_publish_time"] == "2026-02-12 18:00:00"
+    assert industry_switch[1]["in_effective_date"] == "2026-02-13"
 
 
 def test_fixture_st_suspend_and_limit_edge_cases(tmp_path: Path) -> None:

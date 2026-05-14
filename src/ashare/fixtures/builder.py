@@ -111,6 +111,8 @@ def _trading_days(count: int) -> list[date]:
 def _stocks_with_delist(main_days: list[date]) -> list[dict[str, Any]]:
     stocks = [dict(stock) for stock in STOCKS]
     stocks[2]["delist_date"] = main_days[44]
+    stocks[2]["delist_publish_time"] = _published_at(main_days[40])
+    stocks[2]["delist_effective_date"] = main_days[41]
     return stocks
 
 
@@ -138,25 +140,67 @@ def _securities_rows(stocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "exchange": stock["exchange"],
             "list_date": stock["list_date"],
             "delist_date": stock["delist_date"],
+            "delist_publish_time": stock.get("delist_publish_time"),
+            "delist_effective_date": stock.get("delist_effective_date"),
         }
         for stock in stocks
     ]
 
 
 def _industry_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> list[dict[str, Any]]:
-    return [
-        {
-            "stock_code": stock["stock_code"],
-            "industry_standard": "fixture_l1_l2",
-            "industry_l1": stock["industry_l1"],
-            "industry_l2": stock["industry_l2"],
-            "in_date": main_days[0],
-            "out_date": None,
-            "version": "2026Q1",
-            "source": FIXTURE_SOURCE,
-        }
-        for stock in stocks
-    ]
+    rows: list[dict[str, Any]] = []
+    for stock in stocks:
+        if stock["stock_code"] == "000005.SZ":
+            rows.extend(
+                [
+                    {
+                        "stock_code": stock["stock_code"],
+                        "industry_standard": "fixture_l1_l2",
+                        "industry_l1": "Technology",
+                        "industry_l2": "Software",
+                        "in_date": main_days[0],
+                        "out_date": main_days[30],
+                        "in_publish_time": _published_at(main_days[0]),
+                        "in_effective_date": main_days[1],
+                        "out_publish_time": _published_at(main_days[28]),
+                        "out_effective_date": main_days[29],
+                        "version": "2026Q1",
+                        "source": FIXTURE_SOURCE,
+                    },
+                    {
+                        "stock_code": stock["stock_code"],
+                        "industry_standard": "fixture_l1_l2",
+                        "industry_l1": "Technology",
+                        "industry_l2": "Internet",
+                        "in_date": main_days[30],
+                        "out_date": None,
+                        "in_publish_time": _published_at(main_days[28]),
+                        "in_effective_date": main_days[29],
+                        "out_publish_time": None,
+                        "out_effective_date": None,
+                        "version": "2026Q1",
+                        "source": FIXTURE_SOURCE,
+                    },
+                ]
+            )
+        else:
+            rows.append(
+                {
+                    "stock_code": stock["stock_code"],
+                    "industry_standard": "fixture_l1_l2",
+                    "industry_l1": stock["industry_l1"],
+                    "industry_l2": stock["industry_l2"],
+                    "in_date": main_days[0],
+                    "out_date": None,
+                    "in_publish_time": _published_at(main_days[0]),
+                    "in_effective_date": main_days[1],
+                    "out_publish_time": None,
+                    "out_effective_date": None,
+                    "version": "2026Q1",
+                    "source": FIXTURE_SOURCE,
+                }
+            )
+    return rows
 
 
 def _universe_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> list[dict[str, Any]]:
@@ -166,6 +210,10 @@ def _universe_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> list[
             "stock_code": stock["stock_code"],
             "in_date": main_days[0],
             "out_date": stock["delist_date"],
+            "in_publish_time": _published_at(main_days[0]),
+            "in_effective_date": main_days[0],
+            "out_publish_time": stock.get("delist_publish_time"),
+            "out_effective_date": stock.get("delist_effective_date"),
             "source": FIXTURE_SOURCE,
         }
         for stock in stocks
@@ -232,6 +280,10 @@ def _st_status_rows(main_days: list[date]) -> list[dict[str, Any]]:
             "st_type": "ST",
             "in_date": main_days[12],
             "out_date": main_days[32],
+            "in_publish_time": _published_at(main_days[11]),
+            "in_effective_date": main_days[12],
+            "out_publish_time": _published_at(main_days[30]),
+            "out_effective_date": main_days[31],
             "source": FIXTURE_SOURCE,
         }
     ]
