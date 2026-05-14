@@ -1,6 +1,7 @@
 data/raw/
 data/processed/
 data/snapshots/
+tests/fixtures/generated/
 *.duckdb
 __pycache__/
 .pytest_cache/
@@ -8,4 +9,3 @@ __pycache__/
 .ruff_cache/
 .venv/
 .DS_Store
-

@@ -1,9 +1,12 @@
 """Command-line interface for ashare-research-lab."""
 
+from pathlib import Path
 from typing import Any
 
 import typer
 
+from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
+from ashare.ingest.local import ingest_local as ingest_local_csvs
 from ashare.storage.db import default_schema_path, init_db
 
 app = typer.Typer(help="A-share research assistant CLI.")
@@ -91,3 +94,26 @@ def db_init(
     init_db(db_path=db_path, schema_path=schema_path)
     typer.echo(f"Initialized DuckDB database: {db_path}")
     typer.echo(f"Schema path: {resolved_schema_path}")
+
+
+@app.command(name="ingest-local")
+def ingest_local(
+    input_dir: Path = typer.Option(Path("tests/fixtures/generated"), "--input-dir"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    build_fixtures: bool = typer.Option(
+        True,
+        "--build-fixtures/--no-build-fixtures",
+    ),
+) -> None:
+    """Build optional local fixtures, then clear and rewrite fixture tables."""
+    if build_fixtures:
+        build_fixture_csvs(input_dir)
+
+    summary = ingest_local_csvs(input_dir=input_dir, db_path=db_path)
+    typer.echo("Local fixture ingest completed.")
+    typer.echo("WARNING: ingest-local clears target tables before rewriting fixture data.")
+    typer.echo(f"Input dir: {input_dir}")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo("Rows loaded:")
+    for table, row_count in summary.items():
+        typer.echo(f"  {table}: {row_count}")
