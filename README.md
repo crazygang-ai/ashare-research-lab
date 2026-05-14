@@ -10,5 +10,4 @@ conda activate ashare-research-lab
 pytest -q
 ```
 
-Plan: `../a-share-research-plan.md`
-
+Plan: `docs/planning/a-share-research-plan.md`
