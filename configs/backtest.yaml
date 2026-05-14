@@ -1,0 +1,27 @@
+scan:
+  frequency: daily
+
+rebalance:
+  frequency: monthly
+  trigger: month_end
+  execution: next_open
+
+portfolio:
+  top_n: 20
+  weighting: equal_weight
+
+benchmark:
+  primary: hs300
+  secondary: hs300_equal_weight
+
+trading_rules:
+  skip_buy_if_limit_up: true
+  block_sell_if_limit_down: true
+  hold_if_suspended: true
+
+costs:
+  commission_bps: 2.5       # 单边佣金，买入和卖出各收
+  stamp_tax_bps: 10         # 印花税，仅卖出收
+  slippage_bps: 5           # 单边滑点
+  min_commission_yuan: 5    # 单笔最低佣金，按实际券商配置替换
+

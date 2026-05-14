@@ -1,0 +1,20 @@
+name: ashare-research-lab
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - duckdb
+  - pandas
+  - numpy
+  - pyarrow
+  - pydantic
+  - typer
+  - pytest
+  - jupyterlab
+  - ruff
+  - mypy
+  - hatchling
+  - pip:
+      - akshare
+

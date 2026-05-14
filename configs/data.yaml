@@ -1,0 +1,7 @@
+industry:
+  standard: sw
+  version: sw_2021
+  levels:
+    - industry_l1
+    - industry_l2
+

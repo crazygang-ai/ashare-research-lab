@@ -1,0 +1,5 @@
+universe: hs300
+use_historical_members: true
+include_delisted: true
+include_past_st: true
+

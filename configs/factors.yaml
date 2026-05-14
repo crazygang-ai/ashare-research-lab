@@ -1,0 +1,45 @@
+normalization:
+  method: percentile
+  winsorize:
+    lower: 0.01
+    upper: 0.99
+  industry_neutral: true
+
+factors:
+  revenue_yoy:
+    direction: higher_is_better
+    group: financial
+    hard_filter: false
+    soft_penalty: false
+  pe_ttm_percentile:
+    direction: lower_is_better
+    group: valuation
+    hard_filter: false
+    soft_penalty: false
+
+hard_filters:
+  is_st:
+    enabled: true
+  is_suspended:
+    enabled: true
+  is_delisted:
+    enabled: true
+  low_liquidity:
+    enabled: true
+
+soft_penalties:
+  pledge_ratio:
+    enabled: true
+  inquiry_letter_count:
+    enabled: true
+  recent_big_shareholder_reduce:
+    enabled: true
+  non_standard_audit_count:
+    enabled: true
+  goodwill_to_equity:
+    enabled: true
+  receivable_growth_abnormal:
+    enabled: true
+  inventory_growth_abnormal:
+    enabled: true
+

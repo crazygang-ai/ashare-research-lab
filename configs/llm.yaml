@@ -1,0 +1,14 @@
+enabled: false
+announcement_whitelist:
+  - earnings_forecast
+  - earnings_report
+  - buyback
+  - shareholder_reduce
+  - inquiry_letter
+  - regulatory_penalty
+  - material_contract
+  - material_litigation
+  - non_standard_audit
+schema_validation: true
+store_evidence: true
+

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ashare-research-lab"
+version = "0.1.0"
+description = "A-share research assistant skeleton."
+requires-python = ">=3.12"
+
+[project.scripts]
+ashare = "ashare.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ashare"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+strict = false
+

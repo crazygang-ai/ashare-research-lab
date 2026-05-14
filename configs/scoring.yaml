@@ -1,0 +1,3 @@
+# TODO: Define normalized score groups, weights, hard filters, and soft penalties.
+scoring: {}
+
