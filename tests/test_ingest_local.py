@@ -141,5 +141,6 @@ def test_cli_help_lists_phase0_and_phase1_commands() -> None:
         "stock-report",
         "db-init",
         "ingest-local",
+        "as-of",
     ]:
         assert command in result.stdout
