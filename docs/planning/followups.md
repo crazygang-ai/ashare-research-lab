@@ -14,9 +14,9 @@
 ### D2. factor_values 无唯一键
 
 - 现状: `src/ashare/storage/schema.sql` 中 `factor_values` 没有 `(stock_code, trade_date, factor_name, as_of_date, source_run_id)` 或等价 PRIMARY KEY。
-- 触发: 当重复运行同一批因子并写入同一数据库时，重复行会污染单因子验证、回测输入和审计追踪。
-- 决策: Phase 1a-5 已在 `src/ashare/validation/runner.py` 对重复验证输入 fail-fast；待写入策略稳定后仍应增加唯一键或 upsert 语义。
-- 关联: Phase 1a-4 因子写入路径；Phase 1a-5 单因子验证输入检查。
+- 触发: 当重复运行同一批因子并写入同一数据库时，重复行会污染单因子验证、候选清单排序、回测输入和审计追踪。
+- 决策: Phase 1a-5 已在 `src/ashare/validation/runner.py` 对重复验证输入 fail-fast；Phase 1a-6 已在 `src/ashare/scan/candidates.py` 对候选扫描输入 fail-fast。待写入策略稳定后仍应增加唯一键或 upsert 语义。
+- 关联: Phase 1a-4 因子写入路径；Phase 1a-5 单因子验证输入检查；Phase 1a-6 候选扫描输入检查。
 
 ### D3. fundamental 同期基准与 trading_calendar 起点的张力
 
@@ -92,10 +92,10 @@
 
 ### D18. 单因子验证结果未持久化
 
-- 现状: Phase 1a-5 的 `validate_factors` 返回 DataFrame，`ashare validate-factors` 只打印 CLI 摘要，不写 DuckDB 结果表，也不生成 Markdown / CSV 验证报告。
-- 触发: 当需要比较不同 `source_run_id`、复现历史验证结论、生成正式因子验证报告或把验证摘要接入候选研究清单时，CLI-only 输出不足以审计。
-- 决策: 后续报告层或正式 run 管理落地时，设计验证结果持久化与报告渲染；短期保持 Phase 1a-5 只读、无副作用。
-- 关联: Plan 第 15 节因子验证报告；Phase 1a-5 单因子验证。
+- 现状: Phase 1a-5 的 `validate_factors` 返回 DataFrame；Phase 1a-6 已通过 `src/ashare/reports/factor_report.py` 生成 Markdown / CSV 因子验证报告，但仍不写 DuckDB 验证结果表，也不把报告元数据写入 `research_runs`。
+- 触发: 当需要跨 `source_run_id` 查询历史验证结论、在数据库中审计报告生成参数，或把验证摘要稳定接入正式 run / 服务化接口时，仅靠文件报告仍不足以支撑机器查询。
+- 决策: Phase 1a-6 先保留报告文件输出和只读验证流程；后续正式 run 管理落地时，再设计验证结果持久化、报告索引和 `research_runs` 关联。
+- 关联: Plan 第 15 节因子验证报告；Phase 1a-5 单因子验证；Phase 1a-6 因子报告。
 
 ### D19. 单因子验证暂未覆盖分年度、分行业和换手率
 
@@ -103,6 +103,27 @@
 - 触发: 当需要判断因子稳定性、行业结构偏误或实际调仓冲击时，当前验证摘要不足以支撑因子保留 / 剔除结论。
 - 决策: 后续验证增强 phase 中补充分年度、分行业和换手率口径；其中换手率应等组合或候选池调仓规则明确后再实现，避免伪精确。
 - 关联: Plan 第 11 节单因子检验。
+
+### D20. candidate scan 风险阈值硬编码
+
+- 现状: Phase 1a-6 候选清单的 `pe_ttm_percentile >= 0.8`、`pb_percentile >= 0.8`、`return_20d < 0`、`return_60d < 0`、`above_ma60 == 0.0` 等风险提示规则和阈值写在扫描规则中。
+- 触发: 当不同市场环境、行业或研究口径需要不同风险阈值时，硬编码会降低复盘透明度并增加改代码成本。
+- 决策: 后续引入 scan 配置或扩展数据字典来管理风险提示阈值；本 phase 只登记，不做配置化。
+- 关联: Phase 1a-6 候选清单风险提示；Plan 第 15 节每日研究报告。
+
+### D21. candidate scan 暂不支持多因子加权 / 行业中性化
+
+- 现状: Phase 1a-6 候选清单只按显式传入的 `sort_factor` 排序，不做多因子加权、0-100 标准化、行业中性化或基于 ICIR 的自动调权。
+- 触发: 当候选池需要综合多个维度或控制行业暴露时，单因子排序不足以表达完整研究偏好。
+- 决策: 待单因子表现与候选研究流程稳定后，再设计可审计的多因子排序和行业约束；本 phase 不实现综合评分。
+- 关联: Plan 第 10 节因子标准化；Plan 第 14 节打分层设计；Phase 1a-6 scan 约束。
+
+### D22. candidate report 与 plan 第 15 节每日研究报告仍有差距
+
+- 现状: Phase 1a-6 只输出最小候选清单、因子分项、入选原因和规则风险提示，不包含公告摘要、上一交易日新增 / 移出 / 排名变化、相对强弱或完整单股研究信息。
+- 触发: 当需要正式每日研究报告或研究员日常复盘时，当前候选报告还不能替代 plan 第 15 节定义的完整报告。
+- 决策: 后续在公告、LLM、组合跟踪和排名变化能力落地后补齐每日研究报告；本 phase 只登记差距。
+- 关联: Plan 第 15 节报告生成；Phase 1a-6 候选清单。
 
 ## 低优先
 

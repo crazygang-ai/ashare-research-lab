@@ -1,5 +1,6 @@
 """Command-line interface for ashare-research-lab."""
 
+from datetime import datetime
 from pathlib import Path
 from numbers import Integral
 from typing import Any
@@ -18,6 +19,9 @@ from ashare.factors.store import write_factor_values
 from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
 from ashare.ingest.local import ingest_local as ingest_local_csvs
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
+from ashare.reports.candidate_report import write_candidate_report
+from ashare.reports.factor_report import write_factor_validation_report
+from ashare.scan.candidates import HARD_FILTER_NAMES, scan_candidates
 from ashare.storage.db import default_schema_path, init_db
 from ashare.validation.config import load_validation_config, merge_validation_config
 from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
@@ -96,6 +100,10 @@ def _parse_horizon_option(value: str | None) -> list[int] | None:
     return horizons
 
 
+def _generated_at() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def _format_float(value: object) -> str:
     if isinstance(value, Integral):
         return str(value)
@@ -119,6 +127,27 @@ def _print_frame(title: str, frame: Any, verbose: bool = False, limit: int = 10)
         typer.echo(f"  {line}")
     if not verbose and len(frame) > limit:
         typer.echo(f"  ... {len(frame) - limit} more rows")
+
+
+def _candidate_factor_names(candidates: Any) -> list[str]:
+    return [
+        str(column).removeprefix("factor__")
+        for column in candidates.columns
+        if str(column).startswith("factor__")
+    ]
+
+
+def _factor_direction(data_dictionary: dict[str, object], factor_name: str) -> str:
+    factors = data_dictionary.get("factors")
+    if not isinstance(factors, dict):
+        raise click.ClickException("data_dictionary.factors must be a mapping.")
+    entry = factors.get(factor_name)
+    if not isinstance(entry, dict):
+        raise click.ClickException(f"Unknown factor name: {factor_name}")
+    direction = entry.get("direction")
+    if not isinstance(direction, str):
+        raise click.ClickException(f"Missing direction for factor: {factor_name}")
+    return direction
 
 
 @app.command(name="ingest")
@@ -246,12 +275,74 @@ def event_study(
 
 @app.command(name="scan")
 def scan(
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
     as_of: str = typer.Option(..., "--as-of"),
-    universe: str = typer.Option("hs300", "--universe"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    sort_factor: str = typer.Option(..., "--sort-factor"),
+    factor: list[str] | None = typer.Option(None, "--factor"),
     top: int = typer.Option(20, "--top"),
+    data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    output_dir: Path = typer.Option(Path("data/reports/generated/scan"), "--output-dir"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
 ) -> None:
-    """Print scan parameters without generating candidates."""
-    _echo_todo("scan", as_of=as_of, universe=universe, top=top)
+    """Generate a minimal research candidate list from stored factor_values."""
+    try:
+        parsed_as_of = parse_as_of_date(as_of)
+        loaded_dictionary = load_data_dictionary(data_dictionary)
+        connection = duckdb.connect(str(db_path), read_only=True)
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        try:
+            result = scan_candidates(
+                connection=connection,
+                as_of_date=parsed_as_of,
+                source_run_id=source_run_id,
+                sort_factor=sort_factor,
+                factor_names=factor,
+                top_n=top,
+                data_dictionary=loaded_dictionary,
+            )
+        except (TypeError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        connection.close()
+
+    factor_names = _candidate_factor_names(result.candidates)
+    metadata = {
+        "generated_at": _generated_at(),
+        "db_path": str(db_path),
+        "source_run_id": source_run_id,
+        "as_of_date": parsed_as_of.isoformat(),
+        "sort_factor": sort_factor,
+        "sort_factor_direction": _factor_direction(loaded_dictionary, sort_factor),
+        "top_n": top,
+        "factor_names": factor_names,
+        "hard_filter_names": HARD_FILTER_NAMES,
+        "data_dictionary_path": str(data_dictionary),
+    }
+    try:
+        paths = write_candidate_report(
+            result=result,
+            output_dir=output_dir,
+            metadata=metadata,
+            overwrite=overwrite,
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for warning in result.warnings:
+        typer.echo(f"WARNING: {warning}")
+    typer.echo("candidate list is for research only and is not a trading instruction.")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"sort_factor: {sort_factor}")
+    typer.echo(f"top_n: {top}")
+    _print_frame("candidates", result.candidates, verbose=False, limit=top)
+    for key, path in paths.items():
+        typer.echo(f"{key}: {path}")
 
 
 @app.command(name="backtest")
@@ -265,9 +356,100 @@ def backtest(
 
 
 @app.command(name="report")
-def report(as_of: str = typer.Option(..., "--as-of")) -> None:
-    """Print report parameters without writing reports."""
-    _echo_todo("report", as_of=as_of)
+def report(
+    kind: str = typer.Option(..., "--kind", help="Only supported kind: factor-validation."),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    factor: list[str] | None = typer.Option(None, "--factor"),
+    horizon: str | None = typer.Option(None, "--horizon"),
+    n_groups: int | None = typer.Option(None, "--n-groups"),
+    validation_config: Path = typer.Option(Path("configs/validation.yaml"), "--validation-config"),
+    data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    include_hard_filters: bool = typer.Option(False, "--include-hard-filters"),
+    output_dir: Path = typer.Option(
+        Path("data/reports/generated/factor-validation"),
+        "--output-dir",
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+) -> None:
+    """Generate Phase 1a-6 reports."""
+    if kind != "factor-validation":
+        raise click.ClickException("Phase 1a-6 only supports --kind factor-validation.")
+
+    try:
+        horizon_override = _parse_horizon_option(horizon)
+        loaded_config = load_validation_config(validation_config)
+        merged_config = merge_validation_config(
+            loaded_config,
+            horizons=horizon_override,
+            n_groups=n_groups,
+        )
+        loaded_dictionary = load_data_dictionary(data_dictionary)
+        connection = duckdb.connect(str(db_path), read_only=True)
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        try:
+            result = run_factor_validation(
+                connection=connection,
+                start_date=from_,
+                end_date=to,
+                source_run_id=source_run_id,
+                factor_names=factor,
+                include_hard_filters=include_hard_filters,
+                validation_config=merged_config,
+                data_dictionary=loaded_dictionary,
+            )
+        except (TypeError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        connection.close()
+
+    if result.coverage.empty:
+        raise click.ClickException(
+            "No valid factor input rows found for the requested source_run_id, "
+            "date range, factor names, and as_of_date = trade_date filter."
+        )
+
+    factors = list(factor) if factor else sorted(result.coverage["factor_name"].unique().tolist())
+    metadata = {
+        "generated_at": _generated_at(),
+        "db_path": str(db_path),
+        "source_run_id": source_run_id,
+        "validation_from": from_,
+        "validation_to": to,
+        "factors": factors,
+        "horizons": list(merged_config["horizons"]),  # type: ignore[index]
+        "n_groups": merged_config["n_groups"],
+        "include_hard_filters": include_hard_filters,
+        "validation_config_path": str(validation_config),
+        "data_dictionary_path": str(data_dictionary),
+    }
+    try:
+        paths = write_factor_validation_report(
+            result=result,
+            output_dir=output_dir,
+            metadata=metadata,
+            overwrite=overwrite,
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for warning in result.warnings:
+        typer.echo(f"WARNING: {warning}")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"Validation interval: {from_} to {to}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"factors: {', '.join(str(item) for item in factors)}")
+    typer.echo(f"horizons: {', '.join(str(item) for item in metadata['horizons'])}")
+    typer.echo(
+        "long_short_return is for factor analysis only and is not an executable strategy."
+    )
+    for key, path in paths.items():
+        typer.echo(f"{key}: {path}")
 
 
 @app.command(name="stock-report")

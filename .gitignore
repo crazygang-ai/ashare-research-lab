@@ -1,6 +1,7 @@
 data/raw/
 data/processed/
 data/snapshots/
+data/reports/generated/
 tests/fixtures/generated/
 *.duckdb
 __pycache__/
