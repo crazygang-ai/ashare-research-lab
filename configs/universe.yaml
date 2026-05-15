@@ -3,3 +3,7 @@ use_historical_members: true
 include_delisted: true
 include_past_st: true
 
+universe_aliases:
+  hs300:
+    index_code: 000300.SH
+    name: 沪深300

@@ -17,7 +17,10 @@ from ashare.factors.calculator import (
 from ashare.factors.config import load_factor_config
 from ashare.factors.store import write_factor_values
 from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
+from ashare.ingest.akshare_provider import AkShareProvider
+from ashare.ingest.csv_fallback import CsvFallbackProvider
 from ashare.ingest.local import ingest_local as ingest_local_csvs
+from ashare.ingest.real_pilot import ingest_real_pilot
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
 from ashare.reports.candidate_report import write_candidate_report
 from ashare.reports.factor_report import write_factor_validation_report
@@ -152,12 +155,104 @@ def _factor_direction(data_dictionary: dict[str, object], factor_name: str) -> s
 
 @app.command(name="ingest")
 def ingest(
+    source: str = typer.Option("akshare", "--source"),
+    source_tag: str | None = typer.Option(None, "--source-tag"),
     universe: str = typer.Option("hs300", "--universe"),
-    from_: str | None = typer.Option(None, "--from"),
-    to: str | None = typer.Option(None, "--to"),
+    index_code: str | None = typer.Option(None, "--index-code"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    universe_as_of: str | None = typer.Option(None, "--universe-as-of"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    cache_dir: Path = typer.Option(Path("data/raw/cache"), "--cache-dir"),
+    cache_mode: str = typer.Option("use", "--cache-mode"),
+    fallback_csv_dir: Path | None = typer.Option(None, "--fallback-csv-dir"),
+    allow_fallback: bool = typer.Option(False, "--allow-fallback/--no-allow-fallback"),
+    max_symbols: int | None = typer.Option(None, "--max-symbols"),
+    quality_report_dir: Path = typer.Option(
+        Path("data/reports/generated/phase1a7/data-quality"),
+        "--quality-report-dir",
+    ),
+    overwrite_report: bool = typer.Option(False, "--overwrite-report"),
 ) -> None:
-    """Print ingest parameters without fetching data."""
-    _echo_todo("ingest", universe=universe, from_=from_, to=to)
+    """Run the Phase 1a-7 real data ingest pilot."""
+    warnings: list[str] = []
+    resolved_source = source.lower()
+    if resolved_source not in {"akshare", "csv", "auto"}:
+        raise click.ClickException("--source must be one of: akshare, csv, auto.")
+    if cache_mode not in {"use", "refresh", "offline"}:
+        raise click.ClickException("--cache-mode must be one of: use, refresh, offline.")
+    if universe != "hs300":
+        raise click.ClickException("Phase 1a-7 only supports --universe hs300.")
+    resolved_index_code = index_code or "000300.SH"
+    resolved_universe_as_of = universe_as_of or from_
+
+    if resolved_source == "auto" and not allow_fallback:
+        warning = "--source auto without --allow-fallback is equivalent to --source akshare."
+        warnings.append(warning)
+        typer.echo(f"WARNING: {warning}")
+
+    try:
+        if resolved_source == "csv":
+            if fallback_csv_dir is None:
+                raise click.ClickException("--source csv requires --fallback-csv-dir.")
+            provider = CsvFallbackProvider(fallback_csv_dir)
+            fallback_provider = None
+        else:
+            provider = AkShareProvider()
+            fallback_provider = (
+                CsvFallbackProvider(fallback_csv_dir)
+                if allow_fallback and fallback_csv_dir is not None
+                else None
+            )
+            if allow_fallback and fallback_csv_dir is None:
+                raise click.ClickException("--allow-fallback requires --fallback-csv-dir.")
+
+        result = ingest_real_pilot(
+            db_path=db_path,
+            provider=provider,
+            universe=universe,
+            index_code=resolved_index_code,
+            start_date=from_,
+            end_date=to,
+            universe_as_of_date=resolved_universe_as_of,
+            cache_dir=cache_dir,
+            cache_mode=cache_mode,
+            fallback_provider=fallback_provider,
+            allow_fallback=allow_fallback,
+            max_symbols=max_symbols,
+            quality_report_dir=quality_report_dir,
+            source_tag=source_tag,
+            overwrite_report=overwrite_report,
+            extra_warnings=warnings,
+            requested_source=resolved_source,
+        )
+    except click.ClickException:
+        raise
+    except (OSError, RuntimeError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo("Phase 1a-7 ingest completed.")
+    typer.echo(f"Database path: {result.db_path}")
+    typer.echo(f"source: {result.source}")
+    typer.echo(f"effective_source: {result.effective_source}")
+    typer.echo(f"source_tag: {result.source_tag}")
+    typer.echo(f"universe: {universe}")
+    typer.echo(f"index_code: {resolved_index_code}")
+    typer.echo(f"date_range: {from_} to {to}")
+    typer.echo(f"universe_as_of_date: {resolved_universe_as_of}")
+    typer.echo("row_counts:")
+    for dataset, row_count in result.row_counts.items():
+        typer.echo(f"  {dataset}: {row_count}")
+    typer.echo("cache:")
+    typer.echo(f"  hit: {result.cache_counts.get('hit', 0)}")
+    typer.echo(f"  miss: {result.cache_counts.get('miss', 0)}")
+    typer.echo("quality_report_paths:")
+    for name, path in result.quality_report_paths.items():
+        typer.echo(f"  {name}: {path}")
+    if result.warnings:
+        typer.echo("warnings:")
+        for warning in result.warnings:
+            typer.echo(f"  WARNING: {warning}")
 
 
 @app.command(name="validate-factors")

@@ -5,3 +5,16 @@ industry:
     - industry_l1
     - industry_l2
 
+real_data_pilot:
+  default_source: akshare
+  default_universe: hs300
+  default_index_code: 000300.SH
+  cache_dir: data/raw/cache
+  quality_report_dir: data/reports/generated/phase1a7/data-quality
+  max_symbols: 20
+  datasets:
+    - trading_calendar
+    - securities
+    - universe_members
+    - daily_prices
+    - valuation_daily

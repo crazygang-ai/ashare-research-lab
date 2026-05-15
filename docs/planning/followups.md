@@ -125,6 +125,27 @@
 - 决策: 后续在公告、LLM、组合跟踪和排名变化能力落地后补齐每日研究报告；本 phase 只登记差距。
 - 关联: Plan 第 15 节报告生成；Phase 1a-6 候选清单。
 
+### D23. daily_prices / securities / trading_calendar 缺少 source 字段
+
+- 现状: `daily_prices`、`securities`、`trading_calendar` 没有 `source` 字段，Phase 1a-7 只能按日期或股票代码做 bounded replace，无法在表内完全隔离 fixture、AkShare 与 CSV fallback。
+- 触发: 当同一 DuckDB 同时写入 fixture ingest 与真实数据 ingest 时，缺少 source 的表可能被不可审计地覆盖。
+- 决策: Phase 1a-7 不修改 schema，只在 CLI 检测明显混源场景并要求使用单独 DB；后续统一评估是否补 source 或设计正式数据快照层。
+- 关联: Phase 1a-7 real data ingest pilot；Plan 第 6 节核心数据表。
+
+### D24. 历史沪深 300 PIT 成分库尚未落地
+
+- 现状: Phase 1a-7 优先沪深 300，但免费真实源可能只给当前成分快照，无法保证完整历史进入 / 退出日期与披露时间。
+- 触发: 当回测或 as-of 查询需要严格使用历史沪深 300 PIT universe 时，当前快照不能倒推成历史成分。
+- 决策: 本 phase 不伪造历史 PIT 成分；质量报告标明当前快照限制，后续接入可靠历史成分源或自建定期快照。
+- 关联: Plan 第 6 节指数成分与 Point-in-Time 规则；Phase 1a-7 universe ingest。
+
+### D25. --max-symbols 只是试点限流
+
+- 现状: Phase 1a-7 的 `--max-symbols` 只按 `stock_code` 升序抽取少量股票，用于真实数据接入试点、缓存和报告验证。
+- 触发: 当进入正式沪深 300 或更大 universe 接入时，抽样会造成覆盖率和质量报告不代表完整 universe。
+- 决策: 后续明确撤除 `--max-symbols`、替换为正式分批 ingest，或把抽样标记提升为数据快照元数据。
+- 关联: Phase 1a-7 CLI；Plan 第 5 节数据层与第 16 节 CLI 运行。
+
 ## 低优先
 
 ### D14. 无 pre-commit / lint hook
