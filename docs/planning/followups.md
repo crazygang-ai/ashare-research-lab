@@ -230,6 +230,20 @@
 - 决策: 后续真实 LLM 接入前，先补可选依赖声明、client contract、超时 / 重试 / 限流 / token budget、结构化输出约束和 smoke test；默认仍保持 fixture 模式可离线验收。
 - 关联: Phase 2 LLM client；Plan 第 13 节 LLM 层设计；Plan 第 21 节风险。
 
+### D38. 综合评分产物暂不写入数据库或 run 索引
+
+- 现状: Phase 3 的 `ashare score` 默认只读 DuckDB，输出 Markdown / CSV / JSON 文件，不写 `research_runs`、不新增评分结果表，也不维护报告产物索引。
+- 触发: 当需要跨日期查询历史综合评分、比较不同权重配置、做线上报告检索或统一审计运行状态时，文件目录不足以支撑稳定机器查询。
+- 决策: Phase 3 保持只读评分层和文件产物；后续正式 run 管理落地时，再设计评分运行元数据、产物索引和可查询评分摘要。
+- 关联: Phase 3 综合评分；D18 单因子验证结果未持久化；D32 回测产物仅以文件形式保存。
+
+### D39. 综合评分行业中性和软风险因子生产仍待后续设计
+
+- 现状: `configs/scoring.yaml` 已保留 `normalization.industry_neutral.enabled: false` 和 `risk_penalty.factors` 配置位置，但 Phase 3 不从 `risk_events`、财报原表或 LLM 解析表生产新风险因子，也不做行业中性化。
+- 触发: 当综合评分需要控制行业暴露、把公告 / 财报风险转成软扣分因子或对风险权重做单独敏感性分析时，当前配置位置还不能替代完整因子生产和验证流程。
+- 决策: 后续应先把软风险信号作为普通 `factor_values` 因子生产并通过单因子验证，再接入综合评分；行业中性化也应单独定义口径和测试，不混入 Phase 3 MVP。
+- 关联: Phase 3 综合评分；Plan 第 10 节因子标准化；Plan 第 14 节打分层设计；Phase 2 LLM 解析。
+
 ## 低优先
 
 ### D14. 无 pre-commit / lint hook

@@ -1,12 +1,14 @@
 """Command-line interface for ashare-research-lab."""
 
 from datetime import datetime
+import hashlib
 from pathlib import Path
 from numbers import Integral
 from typing import Any
 
 import duckdb
 import click
+import pandas as pd
 import typer
 
 from ashare.backtest.config import load_backtest_config, merge_backtest_config
@@ -29,7 +31,26 @@ from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
 from ashare.reports.backtest_report import write_backtest_report
 from ashare.reports.candidate_report import write_candidate_report
 from ashare.reports.factor_report import write_factor_validation_report
+from ashare.reports.scoring_report import (
+    write_scoring_report,
+    write_validation_failure_artifacts,
+)
 from ashare.scan.candidates import HARD_FILTER_NAMES, scan_candidates
+from ashare.scoring.config import (
+    enabled_groups,
+    enabled_risk_penalty_factors,
+    enabled_scoring_factors,
+    is_strict_mode,
+    load_scoring_config,
+)
+from ashare.scoring.diagnostics import (
+    WEIGHT_SENSITIVITY_COLUMNS,
+    YEARLY_STABILITY_COLUMNS,
+    run_weight_sensitivity,
+    run_yearly_stability,
+)
+from ashare.scoring.scorer import compute_composite_scores
+from ashare.scoring.validation_gate import evaluate_validation_gate, load_validation_artifacts
 from ashare.storage.db import default_schema_path, init_db
 from ashare.validation.config import load_validation_config, merge_validation_config
 from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
@@ -110,6 +131,10 @@ def _parse_horizon_option(value: str | None) -> list[int] | None:
 
 def _generated_at() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _format_float(value: object) -> str:
@@ -539,6 +564,179 @@ def scan(
     typer.echo(f"sort_factor: {sort_factor}")
     typer.echo(f"top_n: {top}")
     _print_frame("candidates", result.candidates, verbose=False, limit=top)
+    for key, path in paths.items():
+        typer.echo(f"{key}: {path}")
+
+
+@app.command(name="score")
+def score(
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    as_of: str = typer.Option(..., "--as-of"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    index_code: str = typer.Option(..., "--index-code"),
+    validation_dir: Path = typer.Option(..., "--validation-dir"),
+    scoring_config: Path = typer.Option(Path("configs/scoring.yaml"), "--scoring-config"),
+    data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    top: int | None = typer.Option(None, "--top"),
+    diagnostics_from: str | None = typer.Option(None, "--diagnostics-from"),
+    diagnostics_to: str | None = typer.Option(None, "--diagnostics-to"),
+    horizon: str | None = typer.Option(None, "--horizon"),
+    skip_diagnostics: bool = typer.Option(False, "--skip-diagnostics"),
+    output_dir: Path = typer.Option(
+        Path("data/reports/generated/phase3/scoring"),
+        "--output-dir",
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+) -> None:
+    """Generate Phase 3 composite scoring reports from validated factor values."""
+    if (diagnostics_from is None) ^ (diagnostics_to is None):
+        raise click.ClickException(
+            "--diagnostics-from and --diagnostics-to must be provided together."
+        )
+    try:
+        parsed_as_of = parse_as_of_date(as_of)
+        loaded_config = load_scoring_config(scoring_config)
+        loaded_dictionary = load_data_dictionary(data_dictionary)
+        artifacts = load_validation_artifacts(validation_dir)
+        gate_result = evaluate_validation_gate(
+            artifacts=artifacts,
+            scoring_config=loaded_config,
+            data_dictionary=loaded_dictionary,
+        )
+        score_section = loaded_config.get("score", {})
+        if not isinstance(score_section, dict):
+            raise click.ClickException("score config section must be a mapping.")
+        resolved_top = int(top if top is not None else score_section.get("top_n", 20))
+        horizons = _parse_horizon_option(horizon)
+        if horizons is None:
+            diagnostics = loaded_config.get("diagnostics", {})
+            yearly = diagnostics.get("yearly_stability", {}) if isinstance(diagnostics, dict) else {}
+            if not isinstance(yearly, dict):
+                yearly = {}
+            horizons = [int(value) for value in yearly.get("horizons", [20])]
+        metadata: dict[str, object] = {
+            "generated_at": _generated_at(),
+            "db_path": str(db_path),
+            "as_of_date": parsed_as_of.isoformat(),
+            "source_run_id": source_run_id,
+            "index_code": index_code,
+            "scoring_config_path": str(scoring_config),
+            "data_dictionary_path": str(data_dictionary),
+            "validation_dir": str(validation_dir),
+            "config_hash": _file_sha256(scoring_config),
+            "top_n": resolved_top,
+            "horizons": horizons,
+            "diagnostics_from": diagnostics_from,
+            "diagnostics_to": diagnostics_to,
+            "skip_diagnostics": skip_diagnostics,
+            "enabled_groups": list(enabled_groups(loaded_config).keys()),
+            "enabled_factors": enabled_scoring_factors(loaded_config),
+            "enabled_risk_penalty_factors": enabled_risk_penalty_factors(loaded_config),
+            "warnings": [],
+        }
+    except click.ClickException:
+        raise
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    gate_failures = gate_result.table[
+        (gate_result.table["configured_enabled"].astype(bool))
+        & (gate_result.table["validation_status"] != "PASS")
+    ]
+    if is_strict_mode(loaded_config) and not gate_failures.empty:
+        error_summary = gate_failures.loc[:, ["factor_name", "reason"]].to_dict("records")
+        metadata["warnings"] = [
+            *gate_result.warnings,
+            "Validation gate failed in strict mode.",
+        ]
+        metadata["validation_errors"] = error_summary
+        try:
+            paths = write_validation_failure_artifacts(
+                validation_gate=gate_result.table,
+                output_dir=output_dir,
+                metadata=metadata,
+                overwrite=overwrite,
+            )
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        for key, path in paths.items():
+            typer.echo(f"{key}: {path}")
+        raise click.ClickException("Validation gate failed in strict mode.")
+
+    try:
+        connection = duckdb.connect(str(db_path), read_only=True)
+    except duckdb.Error as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        try:
+            result = compute_composite_scores(
+                connection=connection,
+                as_of_date=parsed_as_of,
+                source_run_id=source_run_id,
+                index_code=index_code,
+                scoring_config=loaded_config,
+                data_dictionary=loaded_dictionary,
+                validation_gate=gate_result,
+                top_n=resolved_top,
+            )
+            run_warnings = list(result.warnings)
+            if skip_diagnostics:
+                weight_sensitivity = pd.DataFrame(columns=WEIGHT_SENSITIVITY_COLUMNS)
+                yearly_stability = pd.DataFrame(columns=YEARLY_STABILITY_COLUMNS)
+                run_warnings.append("Diagnostics skipped by --skip-diagnostics.")
+            else:
+                weight_sensitivity = run_weight_sensitivity(
+                    base_result=result,
+                    scoring_config=loaded_config,
+                    top_n=resolved_top,
+                )
+                if diagnostics_from is not None and diagnostics_to is not None:
+                    yearly_stability = run_yearly_stability(
+                        connection=connection,
+                        start_date=diagnostics_from,
+                        end_date=diagnostics_to,
+                        source_run_id=source_run_id,
+                        index_code=index_code,
+                        scoring_config=loaded_config,
+                        data_dictionary=loaded_dictionary,
+                        validation_gate=gate_result,
+                        horizons=horizons,
+                    )
+                else:
+                    yearly_stability = pd.DataFrame(columns=YEARLY_STABILITY_COLUMNS)
+                    run_warnings.append(
+                        "No diagnostics date range provided; yearly_stability.csv is empty."
+                    )
+
+            metadata["warnings"] = list(dict.fromkeys([*gate_result.warnings, *run_warnings]))
+            paths = write_scoring_report(
+                result=result,
+                output_dir=output_dir,
+                metadata=metadata,
+                weight_sensitivity=weight_sensitivity,
+                yearly_stability=yearly_stability,
+                overwrite=overwrite,
+            )
+        except (OSError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        connection.close()
+
+    typer.echo("composite score is for research only and is not a trading instruction.")
+    typer.echo("综合评分仅供研究复盘，不是交易指令。")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"index_code: {index_code}")
+    typer.echo(f"top_n: {resolved_top}")
+    validation_counts = result.validation_gate["validation_status"].value_counts().to_dict()
+    typer.echo("validation_gate_summary:")
+    for status, count in sorted(validation_counts.items()):
+        typer.echo(f"  {status}: {count}")
+    for warning in metadata["warnings"]:  # type: ignore[index]
+        typer.echo(f"WARNING: {warning}")
+    _print_frame("top_candidates", result.scored_candidates, verbose=False, limit=resolved_top)
     for key, path in paths.items():
         typer.echo(f"{key}: {path}")
 
