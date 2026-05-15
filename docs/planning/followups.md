@@ -6,10 +6,10 @@
 
 ### D1. effective_date 不区分盘前 / 盘中 / 盘后
 
-- 现状: `src/ashare/pit/effective_date.py` 与各 ingest 路径只落到 date 级 `effective_date`，不能表达盘前 / 盘中 / 盘后披露对当日交易信号的差异。
-- 触发: 当系统接入真实公告、财报或盘中运行时，同一天披露时间会影响是否可在 `as_of_date` 使用该信息。
-- 决策: 待真实公告 / 财报数据接入或盘中运行需求出现时，统一决策是否引入 timestamp 级可见性；短期继续保持 date 级 PIT 口径并在报告中披露。
-- 关联: Plan 第 7 节 Point-in-Time 规则。
+- 现状: `src/ashare/pit/effective_date.py` 与各 ingest 路径只落到 date 级 `effective_date`；Phase 2 公告 ingest / parse 也按 date 级 `effective_date` 和 date 级 `--as-of` 过滤，不能表达盘前 / 盘中 / 盘后披露对当日交易信号的差异。
+- 触发: 当系统接入真实公告、财报、每日盘前报告或盘中运行时，同一天披露时间会影响是否可在 `as_of_date` 使用该信息。
+- 决策: 短期继续保持 date 级 PIT 口径并在报告中披露；待真实公告 / 财报数据接入或盘中运行需求明确时，统一决策是否引入 timestamp 级可见性、同日交易可用规则和历史数据回填口径。
+- 关联: Plan 第 7 节 Point-in-Time 规则；Phase 2 公告解析。
 
 ### D2. factor_values 无唯一键
 
@@ -32,12 +32,12 @@
 - 决策: 后续 phase 如需区分，应新增独立 `data_missing` 字段，不改变当前 `is_suspended` 的不可交易语义。
 - 关联: Plan 第 9 节与 `configs/data_dictionary.yaml`。
 
-### D5. schema_version 不演进
+### D5. schema_version 已开始演进但仍不是完整 migration 机制
 
-- 现状: `schema_version` 表存在，但没有真实迁移序列、版本演进规则或 schema 变更校验流程。
-- 触发: 一旦需要变更表结构、补唯一键或回填历史数据，缺少迁移记录会使本地数据库状态不可审计。
-- 决策: 待 schema 进入稳定期后建立显式 migration 序列；Phase 1a-4.5 只登记不实现。
-- 关联: `src/ashare/storage/schema.sql`。
+- 现状: Phase 2 已将 `CURRENT_SCHEMA_VERSION` 推进到 2，并通过 `CREATE TABLE IF NOT EXISTS` 与 `ensure_schema_columns` 兼容旧库；但仍没有真实迁移序列、逐步升级脚本、版本间校验、回滚策略或回填审计流程。
+- 触发: 一旦继续变更表结构、补唯一键、拆分 JSON 字段或回填历史公告 / 解析数据，缺少明确 migration 记录会使本地数据库状态不可审计。
+- 决策: 短期保留 Phase 2 的最小兼容补列方式；待 schema 继续演进前建立显式 migration 序列和 schema 变更校验流程。
+- 关联: `src/ashare/storage/schema.sql`；`src/ashare/storage/db.py`；Phase 2 公告与 LLM 解析表。
 
 ### D6. ingest_local 是清表重写，不能用于真实数据
 
@@ -222,6 +222,13 @@
 - 触发: 当研究员希望在候选清单中直接看到新增公告摘要、催化剂或风险提示时，需要显式定义报告口径和 PIT 可见性。
 - 决策: 本 phase 不把 LLM 结果接入 candidate report；后续报告增强时再以只读方式引入，并保持不影响排序和总分。
 - 关联: Phase 2 LLM 解析结果表；D22 candidate report 差距；Plan 第 15 节每日研究报告。
+
+### D37. OpenAI-compatible LLM client 仍是未产品化薄封装
+
+- 现状: Phase 2 硬验收只覆盖 `FixtureLLMClient`；`OpenAICompatibleLLMClient` 只是可选路径，默认 Conda 环境和 `pyproject.toml` 未声明 `openai` optional extra，也没有重试、超时、限流、token / cost budget、结构化输出约束或审计级错误分类。
+- 触发: 当真实 LLM API 用于批量解析公告时，网络错误、限流、模型输出漂移、非 JSON 响应或成本失控会影响可复现性和运行稳定性。
+- 决策: 后续真实 LLM 接入前，先补可选依赖声明、client contract、超时 / 重试 / 限流 / token budget、结构化输出约束和 smoke test；默认仍保持 fixture 模式可离线验收。
+- 关联: Phase 2 LLM client；Plan 第 13 节 LLM 层设计；Plan 第 21 节风险。
 
 ## 低优先
 
