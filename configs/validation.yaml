@@ -1,3 +1,14 @@
-# TODO: Define IC, quantile return, event-study, and decay test settings.
-validation: {}
-
+single_factor:
+  horizons: [5, 20, 60]
+  n_groups: 5
+  min_ic_observations: 3
+  min_group_size: 1
+  require_same_as_of_trade_date: true
+  universe_factor_names:
+    - is_st
+    - is_suspended
+    - is_delisted
+    - low_liquidity
+  label:
+    price: adjusted_close
+    return_type: close_to_close

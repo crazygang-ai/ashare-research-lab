@@ -1,6 +1,7 @@
 """Command-line interface for ashare-research-lab."""
 
 from pathlib import Path
+from numbers import Integral
 from typing import Any
 
 import duckdb
@@ -18,6 +19,8 @@ from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
 from ashare.ingest.local import ingest_local as ingest_local_csvs
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
 from ashare.storage.db import default_schema_path, init_db
+from ashare.validation.config import load_validation_config, merge_validation_config
+from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
 
 app = typer.Typer(help="A-share research assistant CLI.")
 
@@ -73,6 +76,51 @@ def _print_factor_counts(counts: dict[str, int]) -> None:
         typer.echo(f"  {factor_name}: {counts.get(factor_name, 0)}")
 
 
+def _parse_horizon_option(value: str | None) -> list[int] | None:
+    if value is None:
+        return None
+    horizons: list[int] = []
+    for item in value.split(","):
+        stripped = item.strip()
+        if not stripped:
+            continue
+        try:
+            horizon = int(stripped)
+        except ValueError as exc:
+            raise click.ClickException("--horizon must be a comma-separated integer list.") from exc
+        if horizon <= 0:
+            raise click.ClickException("--horizon values must be positive integers.")
+        horizons.append(horizon)
+    if not horizons:
+        raise click.ClickException("--horizon must include at least one positive integer.")
+    return horizons
+
+
+def _format_float(value: object) -> str:
+    if isinstance(value, Integral):
+        return str(value)
+    try:
+        numeric = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric != numeric:
+        return "NaN"
+    return f"{numeric:.6f}"
+
+
+def _print_frame(title: str, frame: Any, verbose: bool = False, limit: int = 10) -> None:
+    typer.echo(f"{title}:")
+    if frame.empty:
+        typer.echo("  (empty)")
+        return
+    shown = frame if verbose else frame.head(limit)
+    text = shown.to_string(index=False, formatters={col: _format_float for col in shown.columns})
+    for line in text.splitlines():
+        typer.echo(f"  {line}")
+    if not verbose and len(frame) > limit:
+        typer.echo(f"  ... {len(frame) - limit} more rows")
+
+
 @app.command(name="ingest")
 def ingest(
     universe: str = typer.Option("hs300", "--universe"),
@@ -85,13 +133,104 @@ def ingest(
 
 @app.command(name="validate-factors")
 def validate_factors(
-    universe: str = typer.Option("hs300", "--universe"),
-    from_: str | None = typer.Option(None, "--from"),
-    to: str | None = typer.Option(None, "--to"),
-    horizon: str = typer.Option("20,60,120", "--horizon"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    factor: list[str] | None = typer.Option(None, "--factor"),
+    horizon: str | None = typer.Option(None, "--horizon"),
+    n_groups: int | None = typer.Option(None, "--n-groups"),
+    validation_config: Path = typer.Option(Path("configs/validation.yaml"), "--validation-config"),
+    data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    include_hard_filters: bool = typer.Option(False, "--include-hard-filters"),
+    verbose: bool = typer.Option(False, "--verbose"),
 ) -> None:
-    """Print factor-validation parameters without calculating factors."""
-    _echo_todo("validate-factors", universe=universe, from_=from_, to=to, horizon=horizon)
+    """Validate stored factor_values against future-return labels."""
+    try:
+        horizon_override = _parse_horizon_option(horizon)
+        loaded_config = load_validation_config(validation_config)
+        merged_config = merge_validation_config(
+            loaded_config,
+            horizons=horizon_override,
+            n_groups=n_groups,
+        )
+        loaded_dictionary = load_data_dictionary(data_dictionary)
+        connection = duckdb.connect(str(db_path), read_only=True)
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        try:
+            result = run_factor_validation(
+                connection=connection,
+                start_date=from_,
+                end_date=to,
+                source_run_id=source_run_id,
+                factor_names=factor,
+                include_hard_filters=include_hard_filters,
+                validation_config=merged_config,
+                data_dictionary=loaded_dictionary,
+            )
+        except (TypeError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        connection.close()
+
+    if result.coverage.empty:
+        raise click.ClickException(
+            "No valid factor input rows found for the requested source_run_id, "
+            "date range, factor names, and as_of_date = trade_date filter."
+        )
+
+    horizons = ", ".join(str(value) for value in merged_config["horizons"])  # type: ignore[index]
+    factors = ", ".join(result.coverage["factor_name"].drop_duplicates().tolist())
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"Validation interval: {from_} to {to}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"factors: {factors}")
+    typer.echo(f"horizons: {horizons}")
+    typer.echo(f"n_groups: {merged_config['n_groups']}")
+    typer.echo(
+        "long_short_return is for factor analysis only and is not an executable strategy."
+    )
+
+    for warning in result.warnings:
+        typer.echo(f"WARNING: {warning}")
+
+    _print_frame("label_summary", result.label_summary, verbose=verbose)
+
+    coverage_summary = (
+        result.coverage.groupby("factor_name", as_index=False)
+        .agg(
+            signal_dates=("trade_date", "nunique"),
+            mean_coverage=("coverage", "mean"),
+            mean_missing_rate=("missing_rate", "mean"),
+        )
+        .sort_values("factor_name")
+    )
+    _print_frame("coverage_summary", coverage_summary, verbose=verbose)
+    if verbose:
+        _print_frame("coverage_detail", result.coverage, verbose=True)
+
+    _print_frame("ic_summary", result.ic_summary, verbose=verbose)
+
+    if result.group_returns.empty:
+        group_summary = result.group_returns
+    else:
+        group_summary = (
+            result.group_returns.groupby(["factor_name", "horizon"], as_index=False)
+            .agg(
+                valid_group_dates=("trade_date", "nunique"),
+                mean_top_return=("top_return", "mean"),
+                mean_bottom_return=("bottom_return", "mean"),
+                mean_top_minus_bottom_return=("top_minus_bottom_return", "mean"),
+                mean_long_short_return=("long_short_return", "mean"),
+            )
+            .sort_values(["factor_name", "horizon"])
+        )
+    _print_frame("group_return_summary", group_summary, verbose=verbose)
+
+    _print_frame("decay_curve", result.decay_curve, verbose=verbose)
 
 
 @app.command(name="event-study")
