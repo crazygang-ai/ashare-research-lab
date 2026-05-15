@@ -8,15 +8,15 @@
 
 - 现状: `src/ashare/pit/effective_date.py` 与各 ingest 路径只落到 date 级 `effective_date`，不能表达盘前 / 盘中 / 盘后披露对当日交易信号的差异。
 - 触发: 当系统接入真实公告、财报或盘中运行时，同一天披露时间会影响是否可在 `as_of_date` 使用该信息。
-- 决策: 待 phase 1a-5 之后统一决策是否引入 timestamp 级可见性，短期继续保持 date 级 PIT 口径并在报告中披露。
+- 决策: 待真实公告 / 财报数据接入或盘中运行需求出现时，统一决策是否引入 timestamp 级可见性；短期继续保持 date 级 PIT 口径并在报告中披露。
 - 关联: Plan 第 7 节 Point-in-Time 规则。
 
 ### D2. factor_values 无唯一键
 
 - 现状: `src/ashare/storage/schema.sql` 中 `factor_values` 没有 `(stock_code, trade_date, factor_name, as_of_date, source_run_id)` 或等价 PRIMARY KEY。
-- 触发: 当重复运行同一批因子并写入同一数据库时，重复行会污染验证报告、回测输入和审计追踪。
-- 决策: 待写入策略稳定后增加唯一键或 upsert 语义；本 phase 不改 schema。
-- 关联: Phase 1a-4 因子写入路径。
+- 触发: 当重复运行同一批因子并写入同一数据库时，重复行会污染单因子验证、回测输入和审计追踪。
+- 决策: Phase 1a-5 已在 `src/ashare/validation/runner.py` 对重复验证输入 fail-fast；待写入策略稳定后仍应增加唯一键或 upsert 语义。
+- 关联: Phase 1a-4 因子写入路径；Phase 1a-5 单因子验证输入检查。
 
 ### D3. fundamental 同期基准与 trading_calendar 起点的张力
 
@@ -46,6 +46,20 @@
 - 决策: 真实数据 ingest 落地前设计独立增量写入路径；本 phase 不重构 ingest_local。
 - 关联: Phase 1a-2 / 1a-3 ingest 设计。
 
+### D16. factor_values 缺少显式验证 universe 快照
+
+- 现状: `factor_values` 只保存已写出的因子值，没有保存每个 `source_run_id` / `trade_date` 的完整 universe；Phase 1a-5 在 `src/ashare/validation/runner.py` 中用 hard filter 行的 `stock_code` 并集推断覆盖率分母，缺失时 fallback 到同日可见因子行。
+- 触发: 当 hard filter 未完整写入、局部因子重算、跨 run 比较或正式报告要求精确覆盖率时，推断分母可能高估覆盖率或掩盖 universe 变化。
+- 决策: 后续正式 run / snapshot 管理落地时，引入显式 universe 快照或验证输入快照；短期保留 Phase 1a-5 的 union + fallback，并在 CLI warning 中披露。
+- 关联: Phase 1a-5 覆盖率与缺失率口径；Plan 第 6 节 `factor_values`。
+
+### D17. 单因子 forward_return 是统计标签，不是可执行收益
+
+- 现状: `src/ashare/validation/labels.py` 使用 `close * adj_factor` 构造 close-to-close 未来收益标签，不因停牌、退市、涨跌停或不可交易状态主动剔除样本。
+- 触发: 当用户把 Rank IC、Top / Bottom 或 `long_short_return` 解释成可执行策略收益时，会忽略 A 股交易约束、成交价、停牌、涨跌停、退市和成本。
+- 决策: Phase 1a-5 继续把 forward return 定义为单因子统计标签；交易可执行性、撮合和成本只在后续组合回测中处理，报告中必须明确区分统计标签和可执行收益。
+- 关联: Plan 第 11 节单因子检验；Plan 第 12 节回测假设。
+
 ## 中优先
 
 ### D7. init_db JSON extension 异常字符串匹配
@@ -72,9 +86,23 @@
 ### D13. 无 CI 配置
 
 - 现状: 仓库没有 GitHub Actions 或等价 CI 配置来自动运行安装、生成文档与 pytest。
-- 触发: 多人协作、长期分支开发或 Phase 1a-5 生成验证报告后，未运行验收命令的提交可能进入主线并造成产物漂移。
+- 触发: 多人协作、长期分支开发或单因子验证统计继续扩展后，未运行验收命令的提交可能进入主线并造成产物漂移。
 - 决策: 待项目进入持续迭代阶段后增加最小 CI，至少覆盖 `pip install -e .`、文档生成和 `pytest -q`。
 - 关联: Plan 第 20 节测试要求。
+
+### D18. 单因子验证结果未持久化
+
+- 现状: Phase 1a-5 的 `validate_factors` 返回 DataFrame，`ashare validate-factors` 只打印 CLI 摘要，不写 DuckDB 结果表，也不生成 Markdown / CSV 验证报告。
+- 触发: 当需要比较不同 `source_run_id`、复现历史验证结论、生成正式因子验证报告或把验证摘要接入候选研究清单时，CLI-only 输出不足以审计。
+- 决策: 后续报告层或正式 run 管理落地时，设计验证结果持久化与报告渲染；短期保持 Phase 1a-5 只读、无副作用。
+- 关联: Plan 第 15 节因子验证报告；Phase 1a-5 单因子验证。
+
+### D19. 单因子验证暂未覆盖分年度、分行业和换手率
+
+- 现状: Phase 1a-5 实现覆盖率、缺失率、Rank IC、ICIR、Top / Bottom 分组收益和衰减曲线，但未实现 Plan 第 11 节列出的分年度表现、分行业表现和换手率。
+- 触发: 当需要判断因子稳定性、行业结构偏误或实际调仓冲击时，当前验证摘要不足以支撑因子保留 / 剔除结论。
+- 决策: 后续验证增强 phase 中补充分年度、分行业和换手率口径；其中换手率应等组合或候选池调仓规则明确后再实现，避免伪精确。
+- 关联: Plan 第 11 节单因子检验。
 
 ## 低优先
 
