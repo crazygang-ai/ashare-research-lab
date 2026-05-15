@@ -9,19 +9,25 @@ rebalance:
 portfolio:
   top_n: 20
   weighting: equal_weight
+  initial_cash: 1000000
 
 benchmark:
-  primary: hs300
-  secondary: hs300_equal_weight
+  primary: synthetic_cap_weight
+  secondary: synthetic_equal_weight
+  rebalance_frequency: monthly
+  market_cap_field_priority:
+    - float_mv
+    - total_mv
 
 trading_rules:
   skip_buy_if_limit_up: true
   block_sell_if_limit_down: true
   hold_if_suspended: true
+  delist_exit_value_ratio: 0.0
+  price_compare_tolerance: 0.000001
 
 costs:
-  commission_bps: 2.5       # 单边佣金，买入和卖出各收
-  stamp_tax_bps: 10         # 印花税，仅卖出收
-  slippage_bps: 5           # 单边滑点
-  min_commission_yuan: 5    # 单笔最低佣金，按实际券商配置替换
-
+  commission_bps: 2.5
+  stamp_tax_bps: 10
+  slippage_bps: 5
+  min_commission_yuan: 5

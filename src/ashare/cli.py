@@ -9,6 +9,8 @@ import duckdb
 import click
 import typer
 
+from ashare.backtest.config import load_backtest_config, merge_backtest_config
+from ashare.backtest.engine import run_topn_equal_weight_backtest
 from ashare.factors.calculator import (
     SUPPORTED_FACTORS,
     calculate_factors_for_date,
@@ -22,6 +24,7 @@ from ashare.ingest.csv_fallback import CsvFallbackProvider
 from ashare.ingest.local import ingest_local as ingest_local_csvs
 from ashare.ingest.real_pilot import ingest_real_pilot
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
+from ashare.reports.backtest_report import write_backtest_report
 from ashare.reports.candidate_report import write_candidate_report
 from ashare.reports.factor_report import write_factor_validation_report
 from ashare.scan.candidates import HARD_FILTER_NAMES, scan_candidates
@@ -442,12 +445,112 @@ def scan(
 
 @app.command(name="backtest")
 def backtest(
-    strategy: str = typer.Option("base_score", "--strategy"),
-    from_: str | None = typer.Option(None, "--from"),
-    to: str | None = typer.Option(None, "--to"),
+    strategy: str = typer.Option(..., "--strategy"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    sort_factor: str = typer.Option(..., "--sort-factor"),
+    index_code: str = typer.Option(..., "--index-code"),
+    top: int | None = typer.Option(None, "--top"),
+    initial_cash: float | None = typer.Option(None, "--initial-cash"),
+    backtest_config: Path = typer.Option(Path("configs/backtest.yaml"), "--backtest-config"),
+    data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    output_dir: Path = typer.Option(
+        Path("data/reports/generated/phase1b/backtest"),
+        "--output-dir",
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite"),
 ) -> None:
-    """Print backtest parameters without running a backtest."""
-    _echo_todo("backtest", strategy=strategy, from_=from_, to=to)
+    """Run the Phase 1b Top N equal-weight portfolio backtest."""
+    if strategy != "topn-equal":
+        raise click.ClickException("Phase 1b only supports --strategy topn-equal.")
+
+    try:
+        loaded_config = load_backtest_config(backtest_config)
+        merged_config = merge_backtest_config(
+            loaded_config,
+            top_n=top,
+            initial_cash=initial_cash,
+        )
+        loaded_dictionary = load_data_dictionary(data_dictionary)
+        portfolio_config = merged_config["portfolio"]
+        if not isinstance(portfolio_config, dict):
+            raise click.ClickException("backtest config portfolio section must be a mapping.")
+        resolved_top = int(portfolio_config["top_n"])
+        resolved_initial_cash = float(portfolio_config["initial_cash"])
+        connection = duckdb.connect(str(db_path), read_only=True)
+    except click.ClickException:
+        raise
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        try:
+            result = run_topn_equal_weight_backtest(
+                connection=connection,
+                start_date=from_,
+                end_date=to,
+                source_run_id=source_run_id,
+                sort_factor=sort_factor,
+                index_code=index_code,
+                top_n=resolved_top,
+                initial_cash=resolved_initial_cash,
+                backtest_config=merged_config,
+                data_dictionary=loaded_dictionary,
+            )
+        except (TypeError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        connection.close()
+
+    metadata = {
+        "generated_at": _generated_at(),
+        "db_path": str(db_path),
+        "start_date": from_,
+        "end_date": to,
+        "source_run_id": source_run_id,
+        "sort_factor": sort_factor,
+        "index_code": index_code,
+        "top_n": resolved_top,
+        "initial_cash": resolved_initial_cash,
+        "backtest_config_path": str(backtest_config),
+        "data_dictionary_path": str(data_dictionary),
+    }
+    try:
+        paths = write_backtest_report(
+            result=result,
+            output_dir=output_dir,
+            metadata=metadata,
+            overwrite=overwrite,
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo("backtest report is for research only and is not a trading instruction.")
+    typer.echo("回测报告仅供研究复盘，不是交易指令。")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"Backtest interval: {from_} to {to}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"index_code: {index_code}")
+    typer.echo(f"sort_factor: {sort_factor}")
+    typer.echo(f"top_n: {resolved_top}")
+    metrics = result.metrics.iloc[0].to_dict() if not result.metrics.empty else {}
+    for name in [
+        "total_return",
+        "net_return",
+        "gross_return",
+        "cost_drag",
+        "max_drawdown",
+        "benchmark_cap_weight_return",
+        "benchmark_equal_weight_return",
+    ]:
+        if name in metrics:
+            typer.echo(f"{name}: {_format_float(metrics[name])}")
+    for warning in result.warnings:
+        typer.echo(f"WARNING: {warning}")
+    for key, path in paths.items():
+        typer.echo(f"{key}: {path}")
 
 
 @app.command(name="report")

@@ -26,6 +26,10 @@ CLI_COMMANDS = [
     "backtest",
     "report",
     "stock-report",
+    "db-init",
+    "ingest-local",
+    "as-of",
+    "calculate-factors",
 ]
 SCHEMA_TABLES = [
     "trading_calendar",
@@ -76,4 +80,3 @@ def test_schema_exists_and_executes_in_duckdb() -> None:
         connection.close()
 
     assert set(SCHEMA_TABLES).issubset(tables)
-
