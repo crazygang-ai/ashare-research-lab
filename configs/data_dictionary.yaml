@@ -1,154 +1,347 @@
-fields:
-  return_20d:
-    type: factor
+schema_fields:
+  daily_prices.adj_factor:
+    type: column
     source: daily_prices
-    raw_fields: [close, adj_factor]
-    formula: adjusted_close_t / adjusted_close_t_shift_20 - 1
+    description: "后复权近似因子；动量因子使用 close * adj_factor，adj_factor 为空时 fallback 到 close。"
     unit: ratio
-    frequency: daily
-    effective_date: daily_prices.trade_date <= explicit as_of_date
-    direction: higher_is_better
-    missing: skip when current or 20-observation lagged adjusted close is unavailable
-    hard_filter: false
-    soft_penalty: false
-    description: 20 observed-price-row adjusted return using close * adj_factor, with null adj_factor treated as 1.0.
-
-  return_60d:
-    type: factor
+    pit_visibility: "daily_prices.trade_date <= as_of_date"
+  daily_prices.amount:
+    type: column
     source: daily_prices
-    raw_fields: [close, adj_factor]
-    formula: adjusted_close_t / adjusted_close_t_shift_60 - 1
-    unit: ratio
-    frequency: daily
-    effective_date: daily_prices.trade_date <= explicit as_of_date
-    direction: higher_is_better
-    missing: skip when current or 60-observation lagged adjusted close is unavailable
-    hard_filter: false
-    soft_penalty: false
-    description: 60 observed-price-row adjusted return using close * adj_factor.
-
-  above_ma60:
-    type: factor
+    description: "单日成交额，low_liquidity 使用最近窗口内 amount 均值。"
+    unit: yuan
+    pit_visibility: "daily_prices.trade_date <= as_of_date"
+  daily_prices.is_suspended:
+    type: column
     source: daily_prices
-    raw_fields: [close, adj_factor]
-    formula: 1.0 if adjusted_close_t > mean(latest 60 adjusted close observations including t) else 0.0
-    unit: flag
-    frequency: daily
-    effective_date: daily_prices.trade_date <= explicit as_of_date
-    direction: higher_is_better
-    missing: skip when fewer than 60 valid price observations are available
-    hard_filter: false
-    soft_penalty: false
-    description: Boolean momentum flag based on the latest 60 PIT-visible price observations.
-
-  low_liquidity:
-    type: hard_filter
-    source: daily_prices
-    raw_fields: [amount]
-    formula: 1.0 if avg(latest 20 amount observations including t) < min_avg_amount else 0.0
-    unit: flag
-    frequency: daily
-    effective_date: daily_prices.trade_date <= explicit as_of_date
-    direction: lower_is_better
-    missing: skip when fewer than 20 amount observations are available
-    hard_filter: true
-    soft_penalty: false
-    description: Conservative low-liquidity flag parameterized by configs/factors.yaml hard_filters.low_liquidity.params.
-
-  is_st:
-    type: hard_filter
+    description: "行情行上的真实停牌标志；缺失行情行不在本字段内表达。"
+    unit: boolean
+    pit_visibility: "daily_prices.trade_date == as_of_date for current-day tradability checks"
+  factor_values.as_of_date:
+    type: column
+    source: factor_values
+    description: "因子计算使用的显式 PIT 截止日期。"
+    unit: date
+    pit_visibility: "written by factor calculation for the requested as_of_date"
+  factor_values.factor_value:
+    type: column
+    source: factor_values
+    description: "因子或硬过滤标志的数值输出。"
+    unit: numeric
+    pit_visibility: "derived only from inputs visible at factor_values.as_of_date"
+  factor_values.source_run_id:
+    type: column
+    source: factor_values
+    description: "产生该因子值的 research_runs.run_id；当前 phase 尚不强制唯一键。"
+    unit: identifier
+    pit_visibility: "metadata written after a calculation run"
+  fundamental_reports.effective_date:
+    type: column
+    source: fundamental_reports
+    description: "财报快照进入 PIT 查询可见集的日期。"
+    unit: date
+    pit_visibility: "effective_date <= as_of_date"
+  fundamental_reports.net_profit:
+    type: column
+    source: fundamental_reports
+    description: "归母或口径一致的净利润字段；profit_yoy 使用同一 report_period 的最新可见修订。"
+    unit: yuan
+    pit_visibility: "fundamental_reports.effective_date <= as_of_date"
+  fundamental_reports.publish_time:
+    type: column
+    source: fundamental_reports
+    description: "财报快照披露时间；同一 stock_code/report_period 多条可见记录取 publish_time 最新一条。"
+    unit: timestamp
+    pit_visibility: "publish_time must be no later than the effective snapshot used by PIT"
+  fundamental_reports.revenue:
+    type: column
+    source: fundamental_reports
+    description: "营业收入字段；revenue_yoy 使用同一 report_period 的最新可见修订。"
+    unit: yuan
+    pit_visibility: "fundamental_reports.effective_date <= as_of_date"
+  industry_classifications.in_effective_date:
+    type: column
+    source: industry_classifications
+    description: "行业分类区间开始对 PIT 查询生效的日期。"
+    unit: date
+    pit_visibility: "in_effective_date <= as_of_date"
+  industry_classifications.out_effective_date:
+    type: column
+    source: industry_classifications
+    description: "行业分类区间结束对 PIT 查询生效的日期；为空表示持续有效。"
+    unit: date
+    pit_visibility: "out_effective_date is null or out_effective_date > as_of_date"
+  securities.delist_date:
+    type: column
+    source: securities
+    description: "证券实际退市日期。"
+    unit: date
+    pit_visibility: "visible only through securities delist PIT fields as of as_of_date"
+  securities.delist_effective_date:
+    type: column
+    source: securities
+    description: "退市状态进入 PIT 查询可见集的日期。"
+    unit: date
+    pit_visibility: "delist_effective_date <= as_of_date"
+  securities.delist_publish_time:
+    type: column
+    source: securities
+    description: "退市信息披露时间。"
+    unit: timestamp
+    pit_visibility: "publish_time-backed metadata for delist_effective_date"
+  st_status.in_effective_date:
+    type: column
     source: st_status
-    raw_fields: [in_date, out_date, in_effective_date, out_effective_date]
-    formula: 1.0 when a PIT-visible ST interval is active as of as_of_date, else 0.0
-    unit: flag
-    frequency: daily
-    effective_date: st_status interval effective-date visibility
-    direction: lower_is_better
-    missing: always writes 0.0 or 1.0 for every stock in the final universe
-    hard_filter: true
-    soft_penalty: false
-    description: ST hard-filter flag computed from Phase 1a-3.5 interval as-of semantics.
+    description: "ST 区间开始对 PIT 查询生效的日期。"
+    unit: date
+    pit_visibility: "in_effective_date <= as_of_date"
+  st_status.out_effective_date:
+    type: column
+    source: st_status
+    description: "ST 区间结束对 PIT 查询生效的日期；为空表示仍处于 ST 区间。"
+    unit: date
+    pit_visibility: "out_effective_date is null or out_effective_date > as_of_date"
+  universe_members.in_effective_date:
+    type: column
+    source: universe_members
+    description: "指数成分进入样本池对 PIT 查询生效的日期。"
+    unit: date
+    pit_visibility: "in_effective_date <= as_of_date"
+  universe_members.out_effective_date:
+    type: column
+    source: universe_members
+    description: "指数成分退出样本池对 PIT 查询生效的日期；为空表示仍在样本池内。"
+    unit: date
+    pit_visibility: "out_effective_date is null or out_effective_date > as_of_date"
+  valuation_daily.pb:
+    type: column
+    source: valuation_daily
+    description: "市净率，pb_percentile 使用单股票历史正值窗口计算。"
+    unit: multiple
+    pit_visibility: "valuation_daily.trade_date <= as_of_date"
+  valuation_daily.pe_ttm:
+    type: column
+    source: valuation_daily
+    description: "滚动市盈率，pe_ttm_percentile 使用单股票历史正值窗口计算。"
+    unit: multiple
+    pit_visibility: "valuation_daily.trade_date <= as_of_date"
 
-  is_suspended:
-    type: hard_filter
+factors:
+  above_ma60:
+    factor_name: above_ma60
+    type: factor
     source: daily_prices
-    raw_fields: [is_suspended]
-    formula: 1.0 if current daily_prices.is_suspended is true or the current daily_prices row is missing, else 0.0
-    unit: flag
+    raw_fields: [close, adj_factor]
+    formula: "1.0 if adjusted_close_t > mean(latest 60 adjusted_close observations including t) else 0.0"
+    unit: boolean
     frequency: daily
-    effective_date: daily_prices.trade_date == explicit as_of_date
-    direction: lower_is_better
-    missing: always writes 0.0 or 1.0 for every stock in the final universe
-    hard_filter: true
+    effective_date: "daily_prices.trade_date <= as_of_date; current row must be as_of_date"
+    direction: higher_is_better
+    missing: "do not write when fewer than 60 valid price observations are available"
+    outlier: none
+    normalize: none
+    hard_filter: false
     soft_penalty: false
-    description: MVP unavailable-to-trade flag. A value of 1.0 means either a true suspension row exists for as_of_date or the universe stock has no daily_prices row for as_of_date and is conservatively treated as untradeable/data-insufficient.
-
+    score_group: momentum
+    phase: "1a-4"
+    description: "使用 daily_prices 单股票 PIT 可见观测行中最近 60 个有效价格观测的均值，不使用 trading_calendar 日历偏移；少于 60 个观测时不写入。价格使用 adjusted_close = close * adj_factor，adj_factor 为空时 fallback 到 close。"
+    params:
+      window_days: 60
   is_delisted:
+    factor_name: is_delisted
     type: hard_filter
     source: securities
     raw_fields: [delist_date, delist_effective_date]
-    formula: 1.0 when is_delisted_as_of is true under PIT securities semantics, else 0.0
-    unit: flag
+    formula: "1.0 when is_delisted_as_of is true under PIT securities semantics, else 0.0"
+    unit: boolean
     frequency: daily
-    effective_date: securities.delist_effective_date visibility
-    direction: lower_is_better
-    missing: always writes 0.0 or 1.0 for every stock in the final universe
+    effective_date: "securities.delist_effective_date <= as_of_date"
+    direction: boolean_filter
+    missing: "always write 0.0 or 1.0 for every stock in the final universe"
+    outlier: none
+    normalize: none
     hard_filter: true
     soft_penalty: false
-    description: Delisting hard-filter flag based on Phase 1a-3.5 securities as-of semantics.
-
-  pe_ttm_percentile:
-    type: factor
-    source: valuation_daily
-    raw_fields: [pe_ttm]
-    formula: average_rank_percentile(current pe_ttm within latest valid single-stock valuation window)
-    unit: percentile
+    score_group: risk
+    phase: "1a-4"
+    description: "退市硬过滤标志，基于 securities 的 PIT 退市语义；1.0 表示 as_of_date 已进入退市状态。"
+    params: {}
+  is_st:
+    factor_name: is_st
+    type: hard_filter
+    source: st_status
+    raw_fields: [in_effective_date, out_effective_date]
+    formula: "1.0 when a PIT-visible ST interval is active as of as_of_date, else 0.0"
+    unit: boolean
     frequency: daily
-    effective_date: valuation_daily.trade_date <= explicit as_of_date
-    direction: lower_is_better
-    missing: skip when pe_ttm <= 0 or valid observations are below min_observations
-    hard_filter: false
+    effective_date: "st_status.in_effective_date <= as_of_date and out_effective_date is null or > as_of_date"
+    direction: boolean_filter
+    missing: "always write 0.0 or 1.0 for every stock in the final universe"
+    outlier: none
+    normalize: none
+    hard_filter: true
     soft_penalty: false
-    description: Single-stock rolling PE percentile over PIT-visible positive PE observations.
-
+    score_group: risk
+    phase: "1a-4"
+    description: "ST 硬过滤标志，使用 st_status 区间 effective_date 语义判断 as_of_date 是否处于 ST 状态。"
+    params: {}
+  is_suspended:
+    factor_name: is_suspended
+    type: hard_filter
+    source: daily_prices
+    raw_fields: [is_suspended]
+    formula: "1.0 if current daily_prices.is_suspended is true or the current daily_prices row is missing, else 0.0"
+    unit: boolean
+    frequency: daily
+    effective_date: "daily_prices.trade_date == as_of_date for the current row; missing row is treated as unavailable"
+    direction: boolean_filter
+    missing: "always write 0.0 or 1.0 for every stock in the final universe; missing current daily_prices row maps to 1.0"
+    outlier: none
+    normalize: none
+    hard_filter: true
+    soft_penalty: false
+    score_group: risk
+    phase: "1a-4"
+    description: "is_suspended = 1.0 在 MVP 下含义为不可交易，覆盖真实停牌与当日 daily_prices 行缺失两种场景；后续 phase 如需区分，应引入独立 data_missing 字段。"
+    params: {}
+  low_liquidity:
+    factor_name: low_liquidity
+    type: hard_filter
+    source: daily_prices
+    raw_fields: [amount]
+    formula: "1.0 if avg(latest 20 amount observations including t) < min_avg_amount else 0.0"
+    unit: boolean
+    frequency: daily
+    effective_date: "daily_prices.trade_date <= as_of_date; current row must be as_of_date"
+    direction: boolean_filter
+    missing: "do not write when fewer than window_days amount observations are available"
+    outlier: none
+    normalize: none
+    hard_filter: true
+    soft_penalty: false
+    score_group: risk
+    phase: "1a-4"
+    description: "低流动性硬过滤标志；默认最近 20 个 daily_prices 成交额观测均值低于 50,000,000 元时输出 1.0，窗口与阈值来自 configs/factors.yaml。"
+    params:
+      window_days: 20
+      min_avg_amount: 50000000
   pb_percentile:
+    factor_name: pb_percentile
     type: factor
     source: valuation_daily
     raw_fields: [pb]
-    formula: average_rank_percentile(current pb within latest valid single-stock valuation window)
-    unit: percentile
+    formula: "average-rank percentile of current positive pb within the latest valid single-stock valuation window"
+    unit: percentile_0_1
     frequency: daily
-    effective_date: valuation_daily.trade_date <= explicit as_of_date
+    effective_date: "valuation_daily.trade_date <= as_of_date; current row must be as_of_date"
     direction: lower_is_better
-    missing: skip when pb <= 0 or valid observations are below min_observations
+    missing: "do not write when current pb <= 0, pb is missing, or valid observations are below min_observations"
+    outlier: "exclude non-positive pb values before percentile calculation"
+    normalize: none
     hard_filter: false
     soft_penalty: false
-    description: Single-stock rolling PB percentile over PIT-visible positive PB observations.
-
-  revenue_yoy:
+    score_group: valuation
+    phase: "1a-4"
+    description: "pb_percentile 是单股票历史滚动分位，不是横截面分位；使用 valuation_daily 中 PIT 可见的正 pb 观测，trailing 252 个交易日且至少 20 个有效观测，输出 0.0 到 1.0。"
+    params:
+      window_days: 252
+      min_observations: 20
+  pe_ttm_percentile:
+    factor_name: pe_ttm_percentile
     type: factor
-    source: fundamental_reports
-    raw_fields: [report_period, publish_time, effective_date, revenue]
-    formula: current_revenue / previous_year_same_period_revenue - 1
-    unit: ratio
-    frequency: reporting
-    effective_date: fundamental_reports.effective_date <= explicit as_of_date
-    direction: higher_is_better
-    missing: skip when strict prior-year same-period report is missing or previous revenue <= 0
+    source: valuation_daily
+    raw_fields: [pe_ttm]
+    formula: "average-rank percentile of current positive pe_ttm within the latest valid single-stock valuation window"
+    unit: percentile_0_1
+    frequency: daily
+    effective_date: "valuation_daily.trade_date <= as_of_date; current row must be as_of_date"
+    direction: lower_is_better
+    missing: "do not write when current pe_ttm <= 0, pe_ttm is missing, or valid observations are below min_observations"
+    outlier: "exclude non-positive pe_ttm values before percentile calculation"
+    normalize: none
     hard_filter: false
     soft_penalty: false
-    description: Latest visible report-period revenue growth, using latest publish_time revision for duplicate stock/report_period rows.
-
+    score_group: valuation
+    phase: "1a-4"
+    description: "pe_ttm_percentile 是单股票历史滚动分位，不是横截面分位；使用 valuation_daily 中 PIT 可见的正 pe_ttm 观测，trailing 252 个交易日且至少 20 个有效观测，输出 0.0 到 1.0。"
+    params:
+      window_days: 252
+      min_observations: 20
   profit_yoy:
+    factor_name: profit_yoy
     type: factor
     source: fundamental_reports
     raw_fields: [report_period, publish_time, effective_date, net_profit]
-    formula: current_net_profit / previous_year_same_period_net_profit - 1
+    formula: "current_net_profit / previous_year_same_period_net_profit - 1"
     unit: ratio
-    frequency: reporting
-    effective_date: fundamental_reports.effective_date <= explicit as_of_date
+    frequency: report_period
+    effective_date: "fundamental_reports.effective_date <= as_of_date"
     direction: higher_is_better
-    missing: skip when strict prior-year same-period report is missing or previous net_profit <= 0
+    missing: "do not write when strict prior-year same-period report is missing or previous net_profit <= 0"
+    outlier: none
+    normalize: none
     hard_filter: false
     soft_penalty: false
-    description: Latest visible report-period net profit growth, using latest publish_time revision for duplicate stock/report_period rows.
+    score_group: financial
+    phase: "1a-4"
+    description: "最新可见 report_period 的净利润同比；同一 stock_code/report_period 多条可见记录选择 publish_time 最新一条，同期基准严格匹配上一年同月同日，不向最近季度末或披露日回退。"
+    params: {}
+  return_20d:
+    factor_name: return_20d
+    type: factor
+    source: daily_prices
+    raw_fields: [close, adj_factor]
+    formula: "adjusted_close_t / adjusted_close_shift_20 - 1"
+    unit: ratio
+    frequency: daily
+    effective_date: "daily_prices.trade_date <= as_of_date; current row must be as_of_date"
+    direction: higher_is_better
+    missing: "do not write when current or 20-observation lagged adjusted close is missing or zero"
+    outlier: none
+    normalize: none
+    hard_filter: false
+    soft_penalty: false
+    score_group: momentum
+    phase: "1a-4"
+    description: "20 个 daily_prices 单股票 PIT 可见观测行偏移收益率，使用 shift(20)，不是 trading_calendar 日历偏移；停牌日如果存在 daily_prices 行仍计为一个观测；使用 adjusted_close = close * adj_factor，adj_factor 为空时 fallback 到 close。"
+    params:
+      window_days: 20
+  return_60d:
+    factor_name: return_60d
+    type: factor
+    source: daily_prices
+    raw_fields: [close, adj_factor]
+    formula: "adjusted_close_t / adjusted_close_shift_60 - 1"
+    unit: ratio
+    frequency: daily
+    effective_date: "daily_prices.trade_date <= as_of_date; current row must be as_of_date"
+    direction: higher_is_better
+    missing: "do not write when current or 60-observation lagged adjusted close is missing or zero"
+    outlier: none
+    normalize: none
+    hard_filter: false
+    soft_penalty: false
+    score_group: momentum
+    phase: "1a-4"
+    description: "60 个 daily_prices 单股票 PIT 可见观测行偏移收益率，使用 shift(60)，不是 trading_calendar 日历偏移；停牌日如果存在 daily_prices 行仍计为一个观测；使用 adjusted_close = close * adj_factor，adj_factor 为空时 fallback 到 close。"
+    params:
+      window_days: 60
+  revenue_yoy:
+    factor_name: revenue_yoy
+    type: factor
+    source: fundamental_reports
+    raw_fields: [report_period, publish_time, effective_date, revenue]
+    formula: "current_revenue / previous_year_same_period_revenue - 1"
+    unit: ratio
+    frequency: report_period
+    effective_date: "fundamental_reports.effective_date <= as_of_date"
+    direction: higher_is_better
+    missing: "do not write when strict prior-year same-period report is missing or previous revenue <= 0"
+    outlier: none
+    normalize: none
+    hard_filter: false
+    soft_penalty: false
+    score_group: financial
+    phase: "1a-4"
+    description: "最新可见 report_period 的收入同比；同一 stock_code/report_period 多条可见记录选择 publish_time 最新一条，同期基准严格匹配上一年同月同日，不向最近季度末或披露日回退。"
+    params: {}

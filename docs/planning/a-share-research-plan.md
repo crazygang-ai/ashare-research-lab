@@ -473,54 +473,65 @@ score_group: financial
 
 第一版因子不追求复杂，先保证可解释、可回测、可稳定复现。
 
+Phase 1a-4 已落地的基础因子使用以下口径，后续 phase 不应重新解释这些默认决策：
+
+- 复权口径：动量类因子统一使用后复权近似价 `adjusted_close = close * adj_factor`；`adj_factor` 为空时 fallback 到 `close`。
+- `return_20d` / `return_60d` 观测窗口语义：使用单股票 `daily_prices` 已 PIT 可见的观测行偏移（`shift(N)`），不使用 `trading_calendar` 日历偏移。停牌日如果存在 `daily_prices` 行仍计为一个观测。
+- `above_ma60` 窗口语义：使用最近 60 个有效价格观测的均值，少于 60 个观测时不写入。
+- `pe_ttm_percentile` / `pb_percentile` 分位口径：原始因子层使用单股票历史滚动分位（trailing 252 个交易日，最少 20 个有效观测），不是横截面分位。横截面排名留给第 10 节标准化层。
+- `low_liquidity` 默认阈值：20 个交易日均成交额低于 50,000,000 元判定为低流动性；阈值与窗口在 `configs/factors.yaml` 中可配置。
+- `is_suspended = 1.0` 在 MVP 下含义为不可交易，覆盖真实停牌与当日 `daily_prices` 缺失两种场景；后续如需区分，应引入独立 `data_missing` 字段，已登记到 `docs/planning/followups.md`。
+- 财务因子修订选择：`revenue_yoy` / `profit_yoy` 在同一 `(stock_code, report_period)` 多条可见记录中选择 `publish_time` 最新一条；该规则只作用于因子计算阶段，不下放到 PIT 查询层。
+- 同期基准严格匹配：财务同比的同期基准使用 `(year - 1, month, day)` 严格相等，不向最近季度末或最近披露日回退；不存在严格匹配则视为基准缺失，不写入。
+
 财务质量因子：
 
-- `revenue_yoy`
-- `profit_yoy`
-- `roe`
-- `gross_margin_change`
-- `operating_cashflow_to_profit`
-- `debt_ratio`
+- `revenue_yoy` phase: 1a-4
+- `profit_yoy` phase: 1a-4
+- `roe` phase: 1a-5
+- `gross_margin_change` phase: 1a-5
+- `operating_cashflow_to_profit` phase: 1a-5
+- `debt_ratio` phase: 1a-5
 
 估值因子：
 
-- `pe_ttm_percentile`
-- `pb_percentile`
-- `ps_percentile`
-- `dividend_yield`
+- `pe_ttm_percentile` phase: 1a-4
+- `pb_percentile` phase: 1a-4
+- `ps_percentile` phase: 1a-5
+- `dividend_yield` phase: 1a-5
 
 暂不建议第一版使用 `peg`。如果没有可靠的一致盈利预测数据，可以后续改成：
 
-- `pe_to_historical_profit_growth`
+- `pe_to_historical_profit_growth` phase: TBD
 
 但它不应再叫 PEG。
 
 动量因子：
 
-- `return_20d`
-- `return_60d`
-- `above_ma60`
-- `relative_strength_vs_index`
-- `volume_breakout`
+- `return_20d` phase: 1a-4
+- `return_60d` phase: 1a-4
+- `above_ma60` phase: 1a-4
+- `relative_strength_vs_index` phase: 1a-5
+- `volume_breakout` phase: 1a-5
 
 风险相关字段分为两类，不能混用。
 
 硬过滤标志只做布尔判断，不作为连续因子进入打分：
 
-- `is_st`
-- `is_suspended`
-- `is_delisted`
-- `low_liquidity`
+- `is_st` phase: 1a-4
+- `is_suspended` phase: 1a-4
+- `is_delisted` phase: 1a-4
+- `low_liquidity` phase: 1a-4
 
 软扣分风险因子进入风险扣分或风险报告：
 
-- `pledge_ratio`
-- `inquiry_letter_count`
-- `recent_big_shareholder_reduce`
-- `non_standard_audit_count`
-- `goodwill_to_equity`
-- `receivable_growth_abnormal`
-- `inventory_growth_abnormal`
+- `pledge_ratio` phase: 2 或 3（待 `risk_events` ingest 落地）
+- `inquiry_letter_count` phase: 2 或 3
+- `recent_big_shareholder_reduce` phase: 2 或 3
+- `non_standard_audit_count` phase: 2 或 3
+- `goodwill_to_equity` phase: 1a-5 或 3
+- `receivable_growth_abnormal` phase: 1a-5 或 3
+- `inventory_growth_abnormal` phase: 1a-5 或 3
 
 软扣分项的数据来源：
 
@@ -535,15 +546,19 @@ score_group: financial
 复权规则：
 
 - 交易撮合使用未复权价格。
-- 收益率和动量因子使用后复权价格序列计算。
+- 收益率和动量因子使用后复权近似价 `adjusted_close = close * adj_factor` 计算，`adj_factor` 为空时 fallback 到 `close`。
 - 回测中的后复权价格只能使用截至该交易日已经发生的累计复权因子。
 - 前复权会被未来分红、送转改写历史价格，不能用于回测信号计算。
 - 展示 K 线可以使用前复权。
 - 不允许未来分红、送转、拆股改写 `as_of_date` 当时的信号判断。
 
+已识别但不在 phase 1a-4 / 1a-4.5 解决的工程债集中登记于 `docs/planning/followups.md`。
+
 ## 10. 因子标准化
 
 综合打分前，所有因子必须先变成可比较的分数。
+
+第 9 节中的 `pe_ttm_percentile`、`pb_percentile`、`ps_percentile` 是单股票历史分位，由因子层在原始因子计算阶段产出，输出范围 `0.0` 到 `1.0`。第 10 节描述的横截面 percentile rank 是综合打分前的标准化，在打分层产出，输出 `0`-`100` 子分。两者不是同一层，标准化阶段不应再对 `*_percentile` 因子做二次 percentile，而应直接将其纳入横截面排序或在文档中说明跳过原因。
 
 推荐流程：
 
@@ -995,50 +1010,72 @@ industry:
 `configs/factors.yaml`：
 
 ```yaml
-normalization:
-  method: percentile
-  winsorize:
-    lower: 0.01
-    upper: 0.99
-  industry_neutral: true
-
 factors:
   revenue_yoy:
     direction: higher_is_better
     group: financial
     hard_filter: false
     soft_penalty: false
+    params: {}
+  profit_yoy:
+    direction: higher_is_better
+    group: financial
+    hard_filter: false
+    soft_penalty: false
+    params: {}
   pe_ttm_percentile:
     direction: lower_is_better
     group: valuation
     hard_filter: false
     soft_penalty: false
+    params:
+      window_days: 252
+      min_observations: 20
+  pb_percentile:
+    direction: lower_is_better
+    group: valuation
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 252
+      min_observations: 20
+  return_20d:
+    direction: higher_is_better
+    group: momentum
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 20
+  return_60d:
+    direction: higher_is_better
+    group: momentum
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 60
+  above_ma60:
+    direction: higher_is_better
+    group: momentum
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 60
 
 hard_filters:
   is_st:
     enabled: true
+    params: {}
   is_suspended:
     enabled: true
+    params: {}
   is_delisted:
     enabled: true
+    params: {}
   low_liquidity:
     enabled: true
-
-soft_penalties:
-  pledge_ratio:
-    enabled: true
-  inquiry_letter_count:
-    enabled: true
-  recent_big_shareholder_reduce:
-    enabled: true
-  non_standard_audit_count:
-    enabled: true
-  goodwill_to_equity:
-    enabled: true
-  receivable_growth_abnormal:
-    enabled: true
-  inventory_growth_abnormal:
-    enabled: true
+    params:
+      window_days: 20
+      min_avg_amount: 50000000
 ```
 
 `configs/backtest.yaml`：
