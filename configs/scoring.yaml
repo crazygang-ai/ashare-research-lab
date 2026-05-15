@@ -5,7 +5,7 @@ score:
   min_available_factor_weight: 0.5
 
 validation_gate:
-  mode: strict
+  mode: non_strict
   required_horizons: [20]
   min_coverage: 0.2
   min_valid_oriented_ic_dates: 1

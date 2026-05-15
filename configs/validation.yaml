@@ -1,6 +1,6 @@
 single_factor:
   horizons: [5, 20, 60]
-  n_groups: 5
+  n_groups: 4
   min_ic_observations: 3
   min_group_size: 1
   require_same_as_of_trade_date: true

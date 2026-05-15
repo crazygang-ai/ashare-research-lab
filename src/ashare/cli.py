@@ -496,6 +496,133 @@ def event_study(
     _echo_todo("event-study", event=event, from_=from_, to=to, horizon=horizon)
 
 
+@app.command(name="serve")
+def serve(
+    service_config: Path = typer.Option(Path("configs/service.yaml"), "--service-config"),
+    host: str | None = typer.Option(None, "--host"),
+    port: int | None = typer.Option(None, "--port"),
+    reload: bool = typer.Option(False, "--reload/--no-reload"),
+    enable_scheduler: bool = typer.Option(False, "--enable-scheduler"),
+) -> None:
+    """Start the local read-only FastAPI query service."""
+    from ashare.service.app import create_app
+    from ashare.service.config import load_service_config
+    from ashare.service.scheduler import start_embedded_scheduler
+
+    overrides: dict[str, object] = {"server": {"reload": reload}}
+    server_overrides: dict[str, object] = {}
+    if host is not None:
+        server_overrides["host"] = host
+    if port is not None:
+        server_overrides["port"] = port
+    if server_overrides:
+        server_overrides["reload"] = reload
+        overrides["server"] = server_overrides
+
+    try:
+        config = load_service_config(service_config, overrides=overrides)
+        fastapi_app = create_app(service_config, overrides=overrides)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if enable_scheduler:
+        typer.echo(
+            "WARNING: embedded scheduler is for local convenience only; do not run "
+            "ashare service-scheduler simultaneously."
+        )
+        scheduler = start_embedded_scheduler(config)
+        if scheduler is None:
+            typer.echo("WARNING: scheduler.enabled is false; embedded scheduler has no jobs.")
+
+    typer.echo("service is for research review only and is not a trading system.")
+    typer.echo("服务仅用于研究查询，不是交易系统。")
+    typer.echo(f"Service URL: http://{config.host}:{config.port}")
+
+    import uvicorn
+
+    uvicorn.run(fastapi_app, host=config.host, port=config.port, reload=config.reload)
+
+
+@app.command(name="service-workflow")
+def service_workflow(
+    service_config: Path = typer.Option(Path("configs/service.yaml"), "--service-config"),
+    name: str = typer.Option(..., "--name"),
+    dry_run: bool = typer.Option(True, "--dry-run/--execute"),
+) -> None:
+    """Run or dry-run a configured Phase 4 service workflow."""
+    from ashare.service.config import load_service_config
+    from ashare.service.workflows import (
+        WorkflowDatabaseConflictError,
+        WorkflowDisabledError,
+        WorkflowNotFoundError,
+        run_workflow,
+    )
+
+    try:
+        config = load_service_config(service_config)
+        result = run_workflow(
+            config,
+            name,
+            dry_run=dry_run,
+            source="service-workflow-cli",
+            allow_disabled_dry_run=True,
+        )
+    except (OSError, ValueError, WorkflowNotFoundError, WorkflowDisabledError, WorkflowDatabaseConflictError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo(f"workflow: {result['workflow_name']}")
+    typer.echo(f"source: {result['source']}")
+    typer.echo(f"dry_run: {result['dry_run']}")
+    typer.echo(f"status: {result['status']}")
+    if result.get("target_db_paths"):
+        typer.echo("target_db_paths:")
+        for target in result["target_db_paths"]:
+            typer.echo(f"  {target}")
+    for warning in result.get("warnings", []):
+        typer.echo(f"WARNING: {warning}")
+    typer.echo("steps:")
+    for step in result["steps"]:
+        typer.echo(f"  - {step['name']}: {' '.join(step['command'])}")
+    if result.get("log_path"):
+        typer.echo(f"log_path: {result['log_path']}")
+
+
+@app.command(name="service-scheduler")
+def service_scheduler(
+    service_config: Path = typer.Option(Path("configs/service.yaml"), "--service-config"),
+    once: bool = typer.Option(False, "--once"),
+    name: str | None = typer.Option(None, "--name"),
+    dry_run: bool = typer.Option(True, "--dry-run/--execute"),
+) -> None:
+    """Run the local APScheduler entry point for configured workflows."""
+    from ashare.service.config import load_service_config
+    from ashare.service.scheduler import (
+        SchedulerDisabledError,
+        run_scheduler_forever,
+        run_scheduler_once,
+    )
+    from ashare.service.workflows import WorkflowError
+
+    try:
+        config = load_service_config(service_config)
+        if once:
+            results = run_scheduler_once(config, name=name, dry_run=dry_run)
+            for result in results:
+                typer.echo(f"workflow: {result['workflow_name']}")
+                typer.echo(f"dry_run: {result['dry_run']}")
+                typer.echo(f"status: {result['status']}")
+                for warning in result.get("warnings", []):
+                    typer.echo(f"WARNING: {warning}")
+                for step in result.get("steps", []):
+                    typer.echo(f"  - {step['name']}: {' '.join(step['command'])}")
+                if result.get("log_path"):
+                    typer.echo(f"log_path: {result['log_path']}")
+            return
+        run_scheduler_forever(config, name=name, dry_run=dry_run)
+    except (OSError, ValueError, SchedulerDisabledError, WorkflowError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @app.command(name="scan")
 def scan(
     db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),

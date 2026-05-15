@@ -11,6 +11,10 @@ dependencies:
   - pydantic
   - pyyaml
   - typer
+  - fastapi
+  - uvicorn
+  - httpx
+  - apscheduler
   - pytest
   - jupyterlab
   - ruff

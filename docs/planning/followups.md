@@ -272,6 +272,90 @@
 - 决策: 后续正式 run 管理落地时，把 scoring 输入快照、验证报告哈希、配置哈希、git sha、产物索引和运行状态纳入 `research_runs` 或等价审计层。
 - 关联: Phase 3 综合评分；D16 显式 universe 快照；D18 单因子验证结果未持久化；D38 综合评分产物暂不写入数据库或 run 索引。
 
+### D44. 服务层暂用文件 artifact registry，未接入正式 research_runs
+
+- 现状: Phase 4 本地服务通过扫描 `data/reports/generated` 下的报告文件提供查询，不写入也不读取正式 `research_runs` 产物索引。
+- 触发: 当需要跨运行稳定检索、审计某次报告输入、比较不同数据快照或按 run 状态治理产物时，文件 registry 不足以替代结构化运行记录。
+- 决策: 本 phase 保持只读文件 registry；后续正式 run 管理落地时，再把报告产物、配置哈希、数据快照、git 状态和运行状态接入 `research_runs` 或等价索引。
+- 关联: Phase 4 服务；Plan 第 18 节服务化；D18；D32；D38；D43。
+
+### D45. 服务默认仅本地使用，未实现多用户鉴权
+
+- 现状: Phase 4 服务默认绑定 `127.0.0.1`，workflow API 默认关闭，仅对 workflow 触发保留单值 token 配置，不实现用户系统。
+- 触发: 当服务需要供多人访问、跨机器访问或接入共享网络时，需要用户身份、会话、权限边界和审计日志。
+- 决策: 本 phase 只服务本地研究复盘，不实现登录、RBAC、多用户权限或公网暴露。
+- 关联: Phase 4 本地服务；Plan 第 18 节服务化。
+
+### D46. 定时任务为进程内调度，未实现 durable queue
+
+- 现状: Phase 4 使用 APScheduler 作为本地进程内 scheduler，任务状态只写 workflow run JSON 日志，没有持久化队列、重试队列或跨进程协调。
+- 触发: 当任务需要跨进程恢复、失败重试、可观测队列状态或多节点运行时，进程内 scheduler 不具备 durable queue 语义。
+- 决策: 本 phase 不引入 Celery、Redis、数据库队列或分布式调度；后续如需生产任务平台再单独设计。
+- 关联: Phase 4 service-scheduler；D54。
+
+### D47. 本 phase 选择轻量 Web 查询，未实现真实报告推送
+
+- 现状: Phase 4 仅提供本地 HTML 查询页和 API 读取已有报告，不发送邮件、企业微信、钉钉、飞书或 webhook。
+- 触发: 当每日研究报告需要主动分发、失败告警或发送到团队协作工具时，需要单独设计推送通道、重试和密钥管理。
+- 决策: 报告推送留给后续 phase；本 phase 不写任何真实 webhook、token 或推送集成。
+- 关联: Plan 第 15 节每日研究报告；Phase 4 Web 查询。
+
+### D48. Web 查询不是完整前端产品
+
+- 现状: Phase 4 的 Web 页面是无构建链路的轻量 HTML，只展示服务状态、artifact 列表和查询入口，不提供完整交互式前端。
+- 触发: 当研究员需要多维筛选、图表、报告对比、历史趋势和可保存视图时，轻量页面体验不足。
+- 决策: 本 phase 不引入 React、Vue、Svelte 或前端构建工具；完整 Web 产品后续单独设计。
+- 关联: Phase 4 轻量 Web 查询；Plan 第 18 节服务化。
+
+### D49. Codex Skill 仅提供 repo-local 版本，未自动安装到 CODEX_HOME
+
+- 现状: Phase 4 在 `skills/ashare-research-lab/` 提供可复制的 repo-local Skill 文档，不自动安装到 `$CODEX_HOME/skills`。
+- 触发: 当需要在任意工作区自动触发该 Skill，或团队统一分发 Skill 版本时，需要安装、发布和版本管理流程。
+- 决策: 本 phase 只提交仓库内 Skill 操作说明，不修改用户全局 Codex 配置。
+- 关联: Phase 4 Codex Skill；本地研究工作流。
+
+### D50. 服务未覆盖生产部署、监控、日志聚合和告警
+
+- 现状: Phase 4 只提供本地 FastAPI / Uvicorn 入口和 workflow JSON 日志，不包含 Docker、Kubernetes、Nginx、TLS、监控、日志聚合或告警。
+- 触发: 当服务需要长期运行、多人访问、线上 SLA 或故障响应时，需要生产部署和可观测性体系。
+- 决策: 本 phase 不实现生产部署；后续如需线上化再设计运行环境、监控指标、日志采集和告警规则。
+- 关联: Phase 4 服务；Plan 第 18 节服务化。
+
+### D51. 服务 Markdown HTML 预览未实现 XSS sanitization / 渲染白名单
+
+- 现状: Phase 4 Markdown 接口只返回 raw Markdown，首页不内联渲染 Markdown，也不把报告 HTML、script、事件属性或 iframe 交给浏览器执行。
+- 触发: 当 Web 页面需要直接展示 Markdown HTML 预览时，未配置 sanitizer 会带来 XSS 和 HTML 注入风险。
+- 决策: 本 phase 不实现 Markdown-to-HTML；后续若做预览，必须先定义 sanitizer、标签白名单和安全测试。
+- 关联: Phase 4 Web 查询；报告展示安全。
+
+### D52. 服务无请求限速 / IP 白名单
+
+- 现状: Phase 4 服务默认本地绑定，没有实现请求限速、IP 白名单、反向代理规则或异常流量防护。
+- 触发: 当服务暴露到共享网络或公网时，查询接口和 workflow 入口需要更明确的访问控制和滥用防护。
+- 决策: 本 phase 不做限速或网络边界治理；生产化前必须单独设计。
+- 关联: Phase 4 FastAPI 服务；D45；D50。
+
+### D53. token 鉴权仅使用单值环境变量，未实现轮换或细粒度权限
+
+- 现状: Phase 4 workflow API 在显式开启后，只用 `X-Ashare-Token` 与 `ASHARE_SERVICE_TOKEN` 的单值匹配保护触发入口。
+- 触发: 当多人使用、token 泄露、权限分级或定期轮换成为需求时，单值 token 不足以支撑细粒度安全管理。
+- 决策: 本 phase 保持 workflow HTTP 触发默认关闭；后续如需远程触发，再设计 token 轮换、权限粒度和审计。
+- 关联: Phase 4 Workflow API；D45。
+
+### D54. 嵌入式 scheduler 与独立 scheduler 进程未实现跨进程互斥 / 去重
+
+- 现状: `ashare serve --enable-scheduler` 和 `ashare service-scheduler` 共用 workflow runner，但没有跨进程锁、leader election 或重复触发保护。
+- 触发: 当两个 scheduler 进程同时运行时，同一 workflow 可能重复触发，尤其会影响 workflow 写入 DB 或报告目录。
+- 决策: 本 phase 只打印嵌入式 scheduler 互斥 warning，不实现 durable lock 或跨进程去重。
+- 关联: Phase 4 scheduler；D46；D55。
+
+### D55. service 只读查询 DB 与 workflow 写入 DB 仅做路径隔离，未实现 durable lock 或原子发布
+
+- 现状: Phase 4 在 workflow 执行前检查 step `--db-path` 是否等于服务查询 DB，默认使用独立 workflow 写入 DB；服务只读查询 DB 与 workflow 写入 DB 只做路径隔离。
+- 触发: 当需要把 workflow 结果发布给服务查询 DB、处理并发读写或保证查询看到一致快照时，需要 durable lock、原子替换或版本化发布机制。
+- 决策: 本 phase 不实现 DuckDB 并发写协调、原子发布或 run snapshot 发布流程；后续正式服务化时再设计。
+- 关联: Phase 4 workflow runner；只读查询 DB；workflow 写入 DB；D44。
+
 ## 低优先
 
 ### D14. 无 pre-commit / lint hook

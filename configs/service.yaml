@@ -1,0 +1,65 @@
+version: phase4.v1
+
+server:
+  host: 127.0.0.1
+  port: 8008
+  reload: false
+
+database:
+  db_path: data/processed/ashare_phase4.duckdb
+  read_only: true
+
+artifacts:
+  roots:
+    - data/reports/generated
+  known_kinds:
+    - scan
+    - scoring
+    - backtest
+    - factor_validation
+
+security:
+  allow_http_workflow_run: false
+  require_token_for_workflows: true
+  token_env_var: ASHARE_SERVICE_TOKEN
+  token_header: X-Ashare-Token
+
+scheduler:
+  enabled: false
+  timezone: Asia/Shanghai
+
+workflows:
+  phase4-fixture-research:
+    enabled: false
+    description: Local fixture workflow for service smoke tests. Uses an isolated workflow DB to avoid DuckDB read/write conflicts with the service query DB.
+    schedule:
+      trigger: cron
+      hour: 18
+      minute: 30
+    defaults:
+      timeout_seconds: 1800
+    steps:
+      - name: ingest-local
+        timeout_seconds: 1800
+        command:
+          - ashare
+          - ingest-local
+          - --input-dir
+          - tests/fixtures/generated
+          - --db-path
+          - data/processed/ashare_phase4_workflow.duckdb
+      - name: calculate-factors
+        timeout_seconds: 1800
+        command:
+          - ashare
+          - calculate-factors
+          - --from
+          - "2026-03-30"
+          - --to
+          - "2026-06-26"
+          - --db-path
+          - data/processed/ashare_phase4_workflow.duckdb
+          - --index-code
+          - LOCAL_FIXTURE
+          - --source-run-id
+          - phase4-service-workflow
