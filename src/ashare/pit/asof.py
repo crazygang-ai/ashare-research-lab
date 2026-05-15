@@ -413,6 +413,8 @@ def query_announcements_as_of(
     sql = """
         SELECT
             announcement_id,
+            source,
+            source_tag,
             stock_code,
             title,
             announcement_type,

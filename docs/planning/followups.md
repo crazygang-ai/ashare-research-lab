@@ -195,6 +195,34 @@
 - 决策: 本 phase 保持只读数据库和文件产物；后续正式 run 管理落地时，将回测运行元数据、产物索引和状态纳入 `research_runs` 或等价审计层。
 - 关联: D16 显式 universe 快照；D18 单因子验证结果未持久化；Plan 第 6 节 `research_runs`。
 
+### D33. 真实公告源接入未落地
+
+- 现状: Phase 2 只支持 CSV 公告源、fixture 公告正文和 fixture LLM response，不接入巨潮、交易所或第三方真实公告接口。
+- 触发: 当研究流程需要每日真实公告增量、公告补录或跨来源校验时，CSV fixture 路径不能覆盖真实源分页、限流、字段漂移和公告正文格式差异。
+- 决策: 真实公告源接入留给后续 Phase 2.5，单独设计 provider contract、缓存、质量报告和失败恢复，不混入 Phase 2 硬验收路径。
+- 关联: Phase 2 公告与 LLM 解析；Plan 第 5 节数据层；Plan 第 21 节免费数据源字段变更风险。
+
+### D34. 跨 source 的同一逻辑公告暂不自动合并
+
+- 现状: Phase 2 的公告去重只使用 `(source_tag, announcement_id)`，不同 `source` / `source_tag` 下的同一逻辑公告允许并存。
+- 触发: 当 CSV、真实公告源、交易所镜像或补录源同时写入同一 DuckDB 时，同一公告可能因为来源不同而重复出现。
+- 决策: 本 phase 不做跨 source 身份归并；后续需要引入公告规范化身份、来源优先级和冲突审计后再合并。
+- 关联: Phase 2 `announcements.source` / `source_tag`；D23 数据源隔离；Plan 第 6 节核心数据表。
+
+### D35. 公告更正版 / 版本合并未实现
+
+- 现状: Phase 2 不建模公告更正、补充、撤回或版本链，解析结果只绑定当前入库的单条公告。
+- 触发: 当上市公司发布更正版公告或交易所披露补充材料时，旧版本与新版本之间的事实冲突可能影响研究证据解释。
+- 决策: 本 phase 不处理版本合并；后续真实公告源稳定后再设计公告版本关系、有效版本选择和解析结果失效规则。
+- 关联: Phase 2 公告正文保存；D33 真实公告源接入；Plan 第 7 节 Point-in-Time 规则。
+
+### D36. candidate report 暂不注入 LLM 公告摘要
+
+- 现状: Phase 2 只把 LLM 解析结果写入独立表，candidate report 仍只使用因子和规则风险提示，不展示 LLM 公告摘要。
+- 触发: 当研究员希望在候选清单中直接看到新增公告摘要、催化剂或风险提示时，需要显式定义报告口径和 PIT 可见性。
+- 决策: 本 phase 不把 LLM 结果接入 candidate report；后续报告增强时再以只读方式引入，并保持不影响排序和总分。
+- 关联: Phase 2 LLM 解析结果表；D22 candidate report 差距；Plan 第 15 节每日研究报告。
+
 ## 低优先
 
 ### D14. 无 pre-commit / lint hook

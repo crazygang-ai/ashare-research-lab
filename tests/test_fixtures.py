@@ -16,6 +16,8 @@ def test_fixture_builder_creates_all_expected_csv_files(tmp_path: Path) -> None:
 
     for filename in CSV_FILES:
         assert (output_dir / filename).is_file()
+    assert (output_dir / "announcement_bodies").is_dir()
+    assert (output_dir / "llm_responses").is_dir()
 
 
 def test_fixture_calendar_has_main_sample_and_buffer_days(tmp_path: Path) -> None:
@@ -122,6 +124,9 @@ def test_fixture_fundamental_announcement_and_risk_coverage(tmp_path: Path) -> N
     assert {"earnings_forecast", "buyback", "inquiry_letter"}.issubset(
         {row["announcement_type"] for row in announcement_rows}
     )
+    assert {"source", "source_tag", "body_path", "body_text"}.issubset(announcement_rows[0])
+    assert any((output_dir / "announcement_bodies" / row["body_path"]).is_file() for row in announcement_rows)
+    assert any((output_dir / "llm_responses" / f"{row['announcement_id']}.json").is_file() for row in announcement_rows)
     assert {"pledge", "shareholder_reduce", "inquiry_letter", "non_standard_audit"}.issubset(
         {row["event_type"] for row in risk_rows}
     )

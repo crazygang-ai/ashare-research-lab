@@ -5,8 +5,8 @@ from pathlib import Path
 import duckdb
 
 
-CURRENT_SCHEMA_VERSION = 1
-CURRENT_SCHEMA_DESCRIPTION = "phase 1a-3.5 pit interval visibility"
+CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_DESCRIPTION = "phase 2 announcement llm parsing"
 
 REQUIRED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "securities": (
@@ -30,6 +30,10 @@ REQUIRED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("in_effective_date", "DATE"),
         ("out_publish_time", "TIMESTAMP"),
         ("out_effective_date", "DATE"),
+    ),
+    "announcements": (
+        ("source", "VARCHAR"),
+        ("source_tag", "VARCHAR"),
     ),
 }
 

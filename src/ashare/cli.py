@@ -20,9 +20,11 @@ from ashare.factors.config import load_factor_config
 from ashare.factors.store import write_factor_values
 from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
 from ashare.ingest.akshare_provider import AkShareProvider
+from ashare.ingest.announcements import ingest_announcements as ingest_announcement_csvs
 from ashare.ingest.csv_fallback import CsvFallbackProvider
 from ashare.ingest.local import ingest_local as ingest_local_csvs
 from ashare.ingest.real_pilot import ingest_real_pilot
+from ashare.llm.parser import parse_announcements as parse_announcement_rows
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
 from ashare.reports.backtest_report import write_backtest_report
 from ashare.reports.candidate_report import write_candidate_report
@@ -256,6 +258,104 @@ def ingest(
         typer.echo("warnings:")
         for warning in result.warnings:
             typer.echo(f"  WARNING: {warning}")
+
+
+@app.command(name="ingest-announcements")
+def ingest_announcements(
+    source: str = typer.Option("csv", "--source"),
+    source_tag: str | None = typer.Option(None, "--source-tag"),
+    input_csv: Path = typer.Option(..., "--input-csv"),
+    body_dir: Path | None = typer.Option(None, "--body-dir"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    raw_output_dir: Path = typer.Option(Path("data/raw/announcements"), "--raw-output-dir"),
+    overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite"),
+    allow_missing_body: bool = typer.Option(
+        False,
+        "--allow-missing-body/--no-allow-missing-body",
+    ),
+) -> None:
+    """Ingest Phase 2 CSV announcements and normalized body text."""
+    resolved_source = source.lower()
+    resolved_source_tag = source_tag or resolved_source
+    try:
+        result = ingest_announcement_csvs(
+            db_path=db_path,
+            source=resolved_source,
+            source_tag=resolved_source_tag,
+            input_csv=input_csv,
+            body_dir=body_dir,
+            start_date=from_,
+            end_date=to,
+            raw_output_dir=raw_output_dir,
+            overwrite=overwrite,
+            allow_missing_body=allow_missing_body,
+        )
+    except (OSError, RuntimeError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo("Announcement ingest completed.")
+    typer.echo(f"Database path: {result.db_path}")
+    typer.echo(f"source: {result.source}")
+    typer.echo(f"source_tag: {result.source_tag}")
+    typer.echo(f"date_filter: publish_time {from_} to {to}")
+    typer.echo(f"input_rows: {result.input_rows}")
+    typer.echo(f"filtered_rows: {result.filtered_rows}")
+    typer.echo(f"inserted_rows: {result.inserted_rows}")
+    typer.echo(f"skipped_rows: {result.skipped_rows}")
+    typer.echo(f"overwritten_rows: {result.overwritten_rows}")
+
+
+@app.command(name="parse-announcements")
+def parse_announcements(
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    source_tag: str | None = typer.Option(None, "--source-tag"),
+    parse_run_id: str = typer.Option(..., "--parse-run-id"),
+    llm_mode: str = typer.Option("fixture", "--llm-mode"),
+    fixture_response_dir: Path | None = typer.Option(None, "--fixture-response-dir"),
+    fixture_variant: str | None = typer.Option(None, "--fixture-variant"),
+    model: str = typer.Option("fixture-llm", "--model"),
+    limit: int | None = typer.Option(None, "--limit"),
+    overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite"),
+) -> None:
+    """Parse PIT-visible Phase 2 announcements with a fixture or optional LLM client."""
+    try:
+        result = parse_announcement_rows(
+            db_path=db_path,
+            start_date=from_,
+            end_date=to,
+            as_of=as_of,
+            source_tag=source_tag,
+            parse_run_id=parse_run_id,
+            llm_mode=llm_mode,
+            fixture_response_dir=fixture_response_dir,
+            fixture_variant=fixture_variant,
+            model=model,
+            limit=limit,
+            overwrite=overwrite,
+        )
+    except (OSError, RuntimeError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo("Announcement parse completed.")
+    typer.echo(f"Database path: {result.db_path}")
+    typer.echo(f"date_filter: effective_date {from_} to {to}")
+    if as_of is not None:
+        typer.echo(f"as_of: {as_of}")
+    if source_tag is not None:
+        typer.echo(f"source_tag: {source_tag}")
+    typer.echo(f"parse_run_id: {result.parse_run_id}")
+    typer.echo(f"llm_mode: {result.llm_mode}")
+    typer.echo(f"model: {result.model_name}")
+    typer.echo(f"announcement_count: {result.announcement_count}")
+    typer.echo(f"success_count: {result.success_count}")
+    typer.echo(f"failed_count: {result.failed_count}")
+    typer.echo(f"input_tokens: {result.input_tokens}")
+    typer.echo(f"output_tokens: {result.output_tokens}")
 
 
 @app.command(name="validate-factors")

@@ -28,6 +28,8 @@ CLI_COMMANDS = [
     "stock-report",
     "db-init",
     "ingest-local",
+    "ingest-announcements",
+    "parse-announcements",
     "as-of",
     "calculate-factors",
 ]
@@ -44,6 +46,9 @@ SCHEMA_TABLES = [
     "risk_events",
     "factor_values",
     "research_runs",
+    "announcement_parse_runs",
+    "announcement_llm_results",
+    "announcement_llm_evidence",
 ]
 
 

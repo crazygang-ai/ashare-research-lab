@@ -8,6 +8,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+from ashare.announcements.body_store import announcement_text_hash, normalize_announcement_text
+from ashare.llm.schemas import CURRENT_EXTRACTION_SCHEMA_VERSION
+
 
 FIXTURE_SOURCE = "fixture"
 INDEX_CODE = "LOCAL_FIXTURE"
@@ -94,7 +97,10 @@ def build_fixtures(output_dir: Path) -> None:
     _write_csv(output_dir / "st_status.csv", _st_status_rows(main_days))
     _write_csv(output_dir / "fundamental_reports.csv", _fundamental_rows(stocks, main_days))
     _write_csv(output_dir / "valuation_daily.csv", _valuation_rows(stocks, main_days))
-    _write_csv(output_dir / "announcements.csv", _announcement_rows(main_days))
+    announcement_specs = _announcement_specs(main_days)
+    _write_announcement_bodies(output_dir / "announcement_bodies", announcement_specs)
+    _write_llm_responses(output_dir / "llm_responses", announcement_specs)
+    _write_csv(output_dir / "announcements.csv", _announcement_rows(announcement_specs))
     _write_csv(output_dir / "risk_events.csv", _risk_event_rows(main_days))
 
 
@@ -445,39 +451,184 @@ def _valuation_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> list
     return rows
 
 
-def _announcement_rows(main_days: list[date]) -> list[dict[str, Any]]:
+def _announcement_specs(main_days: list[date]) -> list[dict[str, Any]]:
     return [
         {
             "announcement_id": "ann-000001-forecast",
+            "body_filename": "ann-000001-forecast.txt",
             "stock_code": "000001.SZ",
-            "title": "2025 earnings forecast",
+            "title": "2025年度业绩预告",
             "announcement_type": "earnings_forecast",
             "publish_time": _published_at(main_days[0]),
             "url": "https://example.invalid/ann-000001-forecast",
-            "raw_path": "raw/ann-000001-forecast.txt",
-            "text_hash": "hash-ann-000001-forecast",
+            "body_text": (
+                "公司预计2025年归属于上市公司股东的净利润为15000万元, 同比增长50%。"
+                "业绩增长主要来自主营业务订单增加。"
+            ),
+            "llm_response": {
+                "schema_version": CURRENT_EXTRACTION_SCHEMA_VERSION,
+                "announcement_type": "earnings_forecast",
+                "sentiment": "positive",
+                "summary": "公司预计2025年净利润同比增长50%。",
+                "key_evidence": [
+                    {
+                        "summary": "净利润预计同比增长50%",
+                        "evidence_text": "净利润为15000万元, 同比增长50%",
+                    }
+                ],
+                "catalysts": [
+                    {
+                        "type": "earnings_growth",
+                        "summary": "主营业务订单增加带动业绩增长。",
+                        "evidence_text": "业绩增长主要来自主营业务订单增加",
+                    }
+                ],
+                "risks": [],
+                "extracted_metrics": [
+                    {
+                        "metric_name": "net_profit",
+                        "value": "15000万元",
+                        "raw_value_text": "15000万元",
+                        "evidence_text": "净利润为15000万元, 同比增长50%",
+                    },
+                    {
+                        "metric_name": "profit_growth_yoy",
+                        "value": "50%",
+                        "raw_value_text": "50%",
+                        "evidence_text": "净利润为15000万元, 同比增长50%",
+                    },
+                ],
+            },
         },
         {
             "announcement_id": "ann-000002-buyback",
+            "body_filename": "ann-000002-buyback.txt",
             "stock_code": "000002.SZ",
-            "title": "Share buyback plan",
+            "title": "关于回购公司股份方案的公告",
             "announcement_type": "buyback",
             "publish_time": _published_at(main_days[4]),
             "url": "https://example.invalid/ann-000002-buyback",
-            "raw_path": "raw/ann-000002-buyback.txt",
-            "text_hash": "hash-ann-000002-buyback",
+            "body_text": (
+                "公司拟以自有资金回购股份, 回购金额不低于5000万元且不超过10000万元。"
+                "回购股份将用于员工持股计划。"
+            ),
+            "csv_body_text": (
+                "公司拟以自有资金回购股份, 回购金额不低于5000万元且不超过10000万元。"
+                "回购股份将用于员工持股计划。"
+            ),
+            "llm_response": {
+                "schema_version": CURRENT_EXTRACTION_SCHEMA_VERSION,
+                "announcement_type": "buyback",
+                "sentiment": "positive",
+                "summary": "公司计划以自有资金回购股份并用于员工持股计划。",
+                "key_evidence": [
+                    {
+                        "summary": "回购金额区间明确",
+                        "evidence_text": "回购金额不低于5000万元且不超过10000万元",
+                    }
+                ],
+                "catalysts": [
+                    {
+                        "type": "capital_return",
+                        "summary": "股份回购可能改善市场预期。",
+                        "evidence_text": "公司拟以自有资金回购股份",
+                    }
+                ],
+                "risks": [],
+                "extracted_metrics": [
+                    {
+                        "metric_name": "buyback_min_amount",
+                        "value": "5000万元",
+                        "raw_value_text": "5000万元",
+                        "evidence_text": "回购金额不低于5000万元且不超过10000万元",
+                    }
+                ],
+            },
         },
         {
             "announcement_id": "ann-000005-inquiry",
+            "body_filename": "ann-000005-inquiry.txt",
             "stock_code": "000005.SZ",
-            "title": "Exchange inquiry letter",
+            "title": "关于收到交易所问询函的公告",
             "announcement_type": "inquiry_letter",
             "publish_time": _published_at(main_days[19]),
             "url": "https://example.invalid/ann-000005-inquiry",
-            "raw_path": "raw/ann-000005-inquiry.txt",
-            "text_hash": "hash-ann-000005-inquiry",
+            "body_text": (
+                "公司收到交易所问询函, 要求说明收入确认政策及应收账款增长原因。"
+                "公司将在规定期限内回复。"
+            ),
+            "llm_response": {
+                "schema_version": CURRENT_EXTRACTION_SCHEMA_VERSION,
+                "announcement_type": "inquiry_letter",
+                "sentiment": "negative",
+                "summary": "交易所要求公司说明收入确认和应收账款增长问题。",
+                "key_evidence": [
+                    {
+                        "summary": "问询关注收入确认和应收账款",
+                        "evidence_text": "要求说明收入确认政策及应收账款增长原因",
+                    }
+                ],
+                "catalysts": [],
+                "risks": [
+                    {
+                        "type": "disclosure_inquiry",
+                        "summary": "问询事项可能提示财务披露风险。",
+                        "evidence_text": "公司收到交易所问询函",
+                    }
+                ],
+                "extracted_metrics": [],
+            },
         },
     ]
+
+
+def _announcement_rows(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for spec in specs:
+        body_text = normalize_announcement_text(spec["body_text"])
+        rows.append(
+            {
+                "announcement_id": spec["announcement_id"],
+                "source": FIXTURE_SOURCE,
+                "source_tag": FIXTURE_SOURCE,
+                "stock_code": spec["stock_code"],
+                "title": spec["title"],
+                "announcement_type": spec["announcement_type"],
+                "publish_time": spec["publish_time"],
+                "url": spec["url"],
+                "raw_path": f"raw/{spec['announcement_id']}.txt",
+                "text_hash": announcement_text_hash(body_text),
+                "body_path": spec["body_filename"],
+                "body_text": spec.get("csv_body_text", ""),
+            }
+        )
+    return rows
+
+
+def _write_announcement_bodies(body_dir: Path, specs: list[dict[str, Any]]) -> None:
+    body_dir.mkdir(parents=True, exist_ok=True)
+    for spec in specs:
+        (body_dir / spec["body_filename"]).write_text(
+            normalize_announcement_text(spec["body_text"]),
+            encoding="utf-8",
+        )
+
+
+def _write_llm_responses(response_dir: Path, specs: list[dict[str, Any]]) -> None:
+    response_dir.mkdir(parents=True, exist_ok=True)
+    for spec in specs:
+        response_path = response_dir / f"{spec['announcement_id']}.json"
+        response_path.write_text(
+            json.dumps(spec["llm_response"], ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+    first = specs[0]
+    variant_response = dict(first["llm_response"])
+    variant_response["summary"] = "variant fixture response"
+    (response_dir / f"{first['announcement_id']}.variant.json").write_text(
+        json.dumps(variant_response, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _risk_event_rows(main_days: list[date]) -> list[dict[str, Any]]:

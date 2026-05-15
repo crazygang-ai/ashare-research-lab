@@ -132,6 +132,8 @@ def test_cli_help_lists_required_commands() -> None:
         "stock-report",
         "db-init",
         "ingest-local",
+        "ingest-announcements",
+        "parse-announcements",
         "as-of",
         "calculate-factors",
     ]:

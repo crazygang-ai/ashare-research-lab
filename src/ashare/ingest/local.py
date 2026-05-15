@@ -117,6 +117,8 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "announcements": (
         "announcement_id",
+        "source",
+        "source_tag",
         "stock_code",
         "title",
         "announcement_type",
@@ -166,8 +168,11 @@ OPTIONAL_INPUT_COLUMNS: dict[str, set[str]] = {
         "out_effective_date",
     },
     "fundamental_reports": {"effective_date"},
-    "announcements": {"effective_date"},
+    "announcements": {"source", "source_tag", "effective_date"},
     "risk_events": {"effective_date"},
+}
+IGNORED_INPUT_COLUMNS: dict[str, set[str]] = {
+    "announcements": {"body_path", "body_text"},
 }
 EFFECTIVE_DATE_RULES: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "securities": (("delist_effective_date", "delist_publish_time", "delist_date"),),
@@ -297,11 +302,12 @@ def _validate_header(table: str, fieldnames: list[str] | None) -> None:
 
     expected_columns = set(TABLE_COLUMNS[table])
     optional_columns = OPTIONAL_INPUT_COLUMNS.get(table, set())
+    ignored_columns = IGNORED_INPUT_COLUMNS.get(table, set())
     required_columns = expected_columns - optional_columns
     actual_columns = set(fieldnames)
 
     missing = sorted(required_columns - actual_columns)
-    unexpected = sorted(actual_columns - expected_columns)
+    unexpected = sorted(actual_columns - expected_columns - ignored_columns)
     if missing or unexpected:
         raise ValueError(
             f"{table}.csv columns are invalid; missing {missing}, unexpected {unexpected}."

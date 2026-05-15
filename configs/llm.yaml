@@ -11,4 +11,6 @@ announcement_whitelist:
   - non_standard_audit
 schema_validation: true
 store_evidence: true
-
+default_llm_mode: fixture
+max_input_chars: 20000
+temperature: 0

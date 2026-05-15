@@ -18,6 +18,9 @@ REQUIRED_TABLES = {
     "factor_values",
     "research_runs",
     "schema_version",
+    "announcement_parse_runs",
+    "announcement_llm_results",
+    "announcement_llm_evidence",
 }
 
 
@@ -64,7 +67,7 @@ def test_init_db_creates_duckdb_file_and_required_tables(tmp_path: Path) -> None
 
     assert db_path.is_file()
     assert REQUIRED_TABLES.issubset(_tables(db_path))
-    assert _schema_version_rows(db_path) == [(1, "phase 1a-3.5 pit interval visibility")]
+    assert _schema_version_rows(db_path) == [(2, "phase 2 announcement llm parsing")]
 
 
 def test_schema_sql_executes_directly_in_duckdb() -> None:
@@ -82,11 +85,22 @@ def test_schema_sql_executes_directly_in_duckdb() -> None:
                 """
             ).fetchall()
         }
+        announcement_columns = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'announcements'
+                """
+            ).fetchall()
+        }
     finally:
         connection.close()
 
     assert REQUIRED_TABLES.issubset(tables)
     assert {"delist_publish_time", "delist_effective_date"}.issubset(securities_columns)
+    assert {"source", "source_tag"}.issubset(announcement_columns)
 
 
 def test_init_db_is_idempotent(tmp_path: Path) -> None:
@@ -96,7 +110,7 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     init_db(db_path)
 
     assert REQUIRED_TABLES.issubset(_tables(db_path))
-    assert _schema_version_rows(db_path) == [(1, "phase 1a-3.5 pit interval visibility")]
+    assert _schema_version_rows(db_path) == [(2, "phase 2 announcement llm parsing")]
 
 
 def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(
@@ -158,6 +172,37 @@ def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE announcements (
+                announcement_id VARCHAR,
+                stock_code VARCHAR,
+                title VARCHAR,
+                announcement_type VARCHAR,
+                publish_time TIMESTAMP,
+                effective_date DATE,
+                url VARCHAR,
+                raw_path VARCHAR,
+                text_hash VARCHAR
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO announcements
+            VALUES (
+                'legacy-ann',
+                '000001.SZ',
+                'Legacy announcement',
+                'other',
+                TIMESTAMP '2026-01-05 18:00:00',
+                DATE '2026-01-06',
+                NULL,
+                NULL,
+                NULL
+            )
+            """
+        )
     finally:
         connection.close()
 
@@ -173,6 +218,7 @@ def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(
             "out_publish_time",
             "out_effective_date",
         }.issubset(_columns(db_path, table))
+    assert {"source", "source_tag"}.issubset(_columns(db_path, "announcements"))
 
     connection = duckdb.connect(str(db_path))
     try:
@@ -183,10 +229,18 @@ def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(
             WHERE stock_code = '000003.SZ'
             """
         ).fetchone()
+        announcement = connection.execute(
+            """
+            SELECT announcement_id, source, source_tag
+            FROM announcements
+            WHERE announcement_id = 'legacy-ann'
+            """
+        ).fetchone()
     finally:
         connection.close()
 
     assert row == ("000003.SZ", "Delist Sample", date(2026, 3, 6), None)
+    assert announcement == ("legacy-ann", None, None)
 
 
 def test_ensure_schema_columns_is_directly_callable_and_uses_information_schema(

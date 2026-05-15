@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS valuation_daily (
 
 CREATE TABLE IF NOT EXISTS announcements (
     announcement_id VARCHAR,
+    source VARCHAR,
+    source_tag VARCHAR,
     stock_code VARCHAR,
     title VARCHAR,
     announcement_type VARCHAR,
@@ -109,6 +111,59 @@ CREATE TABLE IF NOT EXISTS announcements (
     url VARCHAR,
     raw_path VARCHAR,
     text_hash VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS announcement_parse_runs (
+    parse_run_id VARCHAR,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    status VARCHAR,
+    llm_mode VARCHAR,
+    model_name VARCHAR,
+    schema_version VARCHAR,
+    prompt_template_hash VARCHAR,
+    config_hash VARCHAR,
+    announcement_count INTEGER,
+    success_count INTEGER,
+    failed_count INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    error VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS announcement_llm_results (
+    parse_id VARCHAR,
+    parse_run_id VARCHAR,
+    announcement_id VARCHAR,
+    source VARCHAR,
+    source_tag VARCHAR,
+    stock_code VARCHAR,
+    announcement_type VARCHAR,
+    schema_version VARCHAR,
+    sentiment VARCHAR,
+    summary VARCHAR,
+    parsed_json JSON,
+    raw_response_json JSON,
+    prompt_hash VARCHAR,
+    confidence DOUBLE,
+    confidence_reasons JSON,
+    status VARCHAR,
+    error VARCHAR,
+    created_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS announcement_llm_evidence (
+    evidence_id VARCHAR,
+    parse_id VARCHAR,
+    announcement_id VARCHAR,
+    item_type VARCHAR,
+    item_index INTEGER,
+    evidence_text VARCHAR,
+    page INTEGER,
+    char_start INTEGER,
+    char_end INTEGER,
+    locator_status VARCHAR,
+    created_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS risk_events (
