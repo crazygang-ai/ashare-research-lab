@@ -43,8 +43,8 @@
 
 - 现状: `src/ashare/ingest/local.py` 的 `ingest_local` 面向 fixture 和本地快照，采用清表重写而不是增量 / upsert。
 - 触发: 接入真实 AkShare 数据、增量行情或多来源快照时，清表会破坏历史审计和并发运行安全。
-- 决策: 真实数据 ingest 落地前设计独立增量写入路径；本 phase 不重构 ingest_local。
-- 关联: Phase 1a-2 / 1a-3 ingest 设计。
+- 决策: Phase 1a-7 已新增独立的 `src/ashare/ingest/real_pilot.py` 真实数据试点路径，不复用 `ingest_local` 的清表重写语义；`ingest_local` 继续保持 fixture-only，后续真实数据正式化时再设计完整增量 / upsert 机制。
+- 关联: Phase 1a-2 / 1a-3 ingest 设计；Phase 1a-7 real data ingest pilot。
 
 ### D16. factor_values 缺少显式验证 universe 快照
 
@@ -145,6 +145,13 @@
 - 触发: 当进入正式沪深 300 或更大 universe 接入时，抽样会造成覆盖率和质量报告不代表完整 universe。
 - 决策: 后续明确撤除 `--max-symbols`、替换为正式分批 ingest，或把抽样标记提升为数据快照元数据。
 - 关联: Phase 1a-7 CLI；Plan 第 5 节数据层与第 16 节 CLI 运行。
+
+### D26. AkShare provider 仍是试点薄封装
+
+- 现状: `src/ashare/ingest/akshare_provider.py` 只封装 Phase 1a-7 所需的少量 AkShare API，依赖当前接口可用性和字段名映射；没有生产级重试、限速、熔断、字段版本探测或上游 schema 变更告警。
+- 触发: 当真实源网络不稳定、AkShare API 改名 / 改字段、接口限流，或需要定期批量接入完整沪深 300 时，当前薄封装可能导致 ingest 失败或质量报告频繁暴露字段缺失。
+- 决策: 后续真实数据路径正式化前，增加 provider capability check、版本化字段映射、重试 / 限速策略，并把 AkShare smoke 结果纳入可审计运行记录；Phase 1a-7 只保留小范围试点。
+- 关联: Phase 1a-7 AkShare provider；Plan 第 21 节免费数据源字段变更风险。
 
 ## 低优先
 
