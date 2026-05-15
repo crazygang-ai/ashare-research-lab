@@ -97,11 +97,13 @@ def test_fundamental_reports_require_publish_date_and_effective_date(
 ) -> None:
     before = query_fundamental_reports_as_of(connection, "2026-01-05", stock_code="000001.SZ")
     after = query_fundamental_reports_as_of(connection, "2026-01-06", stock_code="000001.SZ")
+    before_current = before[before["report_period"] == pd.Timestamp("2025-12-31")]
+    after_current = after[after["report_period"] == pd.Timestamp("2025-12-31")]
 
-    assert before.empty
-    assert len(after) == 1
-    assert after.iloc[0]["publish_time"] == pd.Timestamp("2026-01-05 18:00:00")
-    assert after.iloc[0]["effective_date"] == pd.Timestamp("2026-01-06")
+    assert before_current.empty
+    assert len(after_current) == 1
+    assert after_current.iloc[0]["publish_time"] == pd.Timestamp("2026-01-05 18:00:00")
+    assert after_current.iloc[0]["effective_date"] == pd.Timestamp("2026-01-06")
 
 
 def test_announcements_require_publish_date_and_effective_date(
@@ -385,7 +387,7 @@ def test_as_of_after_fixture_history_returns_all_already_visible_fixture_rows(
 ) -> None:
     snapshot = build_as_of_snapshot(
         connection,
-        "2026-04-01",
+        "2026-07-15",
         index_code=INDEX_CODE,
         include_delisted=True,
     )

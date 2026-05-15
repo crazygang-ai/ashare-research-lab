@@ -1,45 +1,75 @@
-normalization:
-  method: percentile
-  winsorize:
-    lower: 0.01
-    upper: 0.99
-  industry_neutral: true
-
 factors:
-  revenue_yoy:
+  return_20d:
     direction: higher_is_better
-    group: financial
+    group: momentum
     hard_filter: false
     soft_penalty: false
+    params:
+      window_days: 20
+
+  return_60d:
+    direction: higher_is_better
+    group: momentum
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 60
+
+  above_ma60:
+    direction: higher_is_better
+    group: momentum
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 60
+
   pe_ttm_percentile:
     direction: lower_is_better
     group: valuation
     hard_filter: false
     soft_penalty: false
+    params:
+      window_days: 252
+      min_observations: 20
+
+  pb_percentile:
+    direction: lower_is_better
+    group: valuation
+    hard_filter: false
+    soft_penalty: false
+    params:
+      window_days: 252
+      min_observations: 20
+
+  revenue_yoy:
+    direction: higher_is_better
+    group: financial
+    hard_filter: false
+    soft_penalty: false
+    params: {}
+
+  profit_yoy:
+    direction: higher_is_better
+    group: financial
+    hard_filter: false
+    soft_penalty: false
+    params: {}
 
 hard_filters:
   is_st:
     enabled: true
+    params: {}
+
   is_suspended:
     enabled: true
+    params: {}
+
   is_delisted:
     enabled: true
+    params: {}
+
   low_liquidity:
     enabled: true
-
-soft_penalties:
-  pledge_ratio:
-    enabled: true
-  inquiry_letter_count:
-    enabled: true
-  recent_big_shareholder_reduce:
-    enabled: true
-  non_standard_audit_count:
-    enabled: true
-  goodwill_to_equity:
-    enabled: true
-  receivable_growth_abnormal:
-    enabled: true
-  inventory_growth_abnormal:
-    enabled: true
-
+    params:
+      window_days: 20
+      min_avg_amount: 50000000

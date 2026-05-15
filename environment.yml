@@ -9,6 +9,7 @@ dependencies:
   - numpy
   - pyarrow
   - pydantic
+  - pyyaml
   - typer
   - pytest
   - jupyterlab
@@ -17,4 +18,3 @@ dependencies:
   - hatchling
   - pip:
       - akshare
-

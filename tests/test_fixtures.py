@@ -27,8 +27,10 @@ def test_fixture_calendar_has_main_sample_and_buffer_days(tmp_path: Path) -> Non
     calendar_dates = [row["trade_date"] for row in calendar_rows]
     price_dates = sorted({row["trade_date"] for row in daily_price_rows})
 
+    assert MAIN_SAMPLE_DAYS >= 125
     assert len(calendar_rows) >= MAIN_SAMPLE_DAYS + 3
     assert calendar_dates[0] == "2026-01-05"
+    assert calendar_dates[MAIN_SAMPLE_DAYS - 1] == "2026-06-26"
     assert len(price_dates) == MAIN_SAMPLE_DAYS
     assert price_dates == calendar_dates[:MAIN_SAMPLE_DAYS]
 
@@ -100,6 +102,10 @@ def test_fixture_st_suspend_and_limit_edge_cases(tmp_path: Path) -> None:
         row["limit_down"] and float(row["close"]) == float(row["limit_down"])
         for row in price_rows
     )
+    assert {row["adj_factor"] for row in price_rows if row["stock_code"] == "000001.SZ"} == {
+        "1.0",
+        "1.05",
+    }
 
 
 def test_fixture_fundamental_announcement_and_risk_coverage(tmp_path: Path) -> None:

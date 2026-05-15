@@ -11,7 +11,7 @@ from typing import Any
 
 FIXTURE_SOURCE = "fixture"
 INDEX_CODE = "LOCAL_FIXTURE"
-MAIN_SAMPLE_DAYS = 60
+MAIN_SAMPLE_DAYS = 125
 BUFFER_DAYS = 3
 TOTAL_CALENDAR_DAYS = MAIN_SAMPLE_DAYS + BUFFER_DAYS
 
@@ -225,6 +225,9 @@ def _daily_price_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> li
     for stock_index, stock in enumerate(stocks, start=1):
         previous_close = round(8.0 + stock_index * 3.0, 2)
         for day_index, trade_date in enumerate(main_days):
+            if stock["stock_code"] == "000005.SZ" and day_index == 90:
+                continue
+
             limit_up = round(previous_close * 1.10, 2)
             limit_down = round(previous_close * 0.90, 2)
             is_suspended = stock["stock_code"] == "000004.SZ" and day_index == 15
@@ -263,7 +266,9 @@ def _daily_price_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> li
                     "close": close,
                     "volume": volume,
                     "amount": amount,
-                    "adj_factor": 1.0,
+                    "adj_factor": 1.05
+                    if stock["stock_code"] == "000001.SZ" and day_index >= 90
+                    else 1.0,
                     "is_suspended": is_suspended,
                     "limit_up": limit_up,
                     "limit_down": limit_down,
@@ -311,7 +316,113 @@ def _fundamental_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> li
                 "source": FIXTURE_SOURCE,
             }
         )
+    rows.extend(
+        [
+            _fundamental_report_row(
+                "000001.SZ",
+                date(2025, 3, 31),
+                datetime(2025, 4, 30, 18, 0),
+                revenue=1000.0,
+                net_profit=100.0,
+            ),
+            _fundamental_report_row(
+                "000001.SZ",
+                date(2026, 3, 31),
+                _published_at(main_days[70]),
+                revenue=1300.0,
+                net_profit=150.0,
+            ),
+            _fundamental_report_row(
+                "000001.SZ",
+                date(2026, 3, 31),
+                _published_at(main_days[80]),
+                revenue=1400.0,
+                net_profit=160.0,
+            ),
+            _fundamental_report_row(
+                "000002.SZ",
+                date(2025, 3, 31),
+                datetime(2025, 4, 30, 18, 0),
+                revenue=1100.0,
+                net_profit=120.0,
+            ),
+            _fundamental_report_row(
+                "000002.SZ",
+                date(2026, 3, 31),
+                _published_at(main_days[70]),
+                revenue=1320.0,
+                net_profit=180.0,
+            ),
+            _fundamental_report_row(
+                "000003.SZ",
+                date(2025, 3, 31),
+                datetime(2025, 4, 30, 18, 0),
+                revenue=1000.0,
+                net_profit=100.0,
+            ),
+            _fundamental_report_row(
+                "000003.SZ",
+                date(2026, 3, 31),
+                _published_at(main_days[70]),
+                revenue=900.0,
+                net_profit=90.0,
+            ),
+            _fundamental_report_row(
+                "000004.SZ",
+                date(2025, 3, 31),
+                datetime(2025, 4, 30, 18, 0),
+                revenue=0.0,
+                net_profit=40.0,
+            ),
+            _fundamental_report_row(
+                "000004.SZ",
+                date(2026, 3, 31),
+                _published_at(main_days[70]),
+                revenue=500.0,
+                net_profit=80.0,
+            ),
+            _fundamental_report_row(
+                "000005.SZ",
+                date(2025, 3, 31),
+                datetime(2025, 4, 30, 18, 0),
+                revenue=400.0,
+                net_profit=0.0,
+            ),
+            _fundamental_report_row(
+                "000005.SZ",
+                date(2026, 3, 31),
+                _published_at(main_days[70]),
+                revenue=800.0,
+                net_profit=50.0,
+            ),
+        ]
+    )
     return rows
+
+
+def _fundamental_report_row(
+    stock_code: str,
+    report_period: date,
+    publish_time: datetime,
+    revenue: float,
+    net_profit: float,
+) -> dict[str, Any]:
+    return {
+        "stock_code": stock_code,
+        "report_period": report_period,
+        "publish_time": publish_time,
+        "revenue": revenue,
+        "net_profit": net_profit,
+        "roe": 0.10,
+        "gross_margin": 0.35,
+        "operating_cashflow": net_profit * 0.9,
+        "debt_ratio": 0.40,
+        "goodwill": 12.0,
+        "total_equity": 900.0,
+        "accounts_receivable": 70.0,
+        "inventory": 80.0,
+        "source": FIXTURE_SOURCE,
+    }
 
 
 def _valuation_rows(stocks: list[dict[str, Any]], main_days: list[date]) -> list[dict[str, Any]]:
