@@ -321,6 +321,7 @@ def test_cli_help_lists_phase0_and_phase1_commands() -> None:
         "ingest",
         "validate-factors",
         "event-study",
+        "daily-report",
         "scan",
         "backtest",
         "report",

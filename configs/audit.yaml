@@ -22,3 +22,13 @@ data_fingerprint:
 factor_values:
   duplicate_policy: fail
   overwrite_requires_flag: true
+
+daily_report:
+  data_quality:
+    min_price_coverage: 0.8
+    min_valuation_coverage: 0.8
+    min_factor_stock_coverage: 0.8
+    min_hard_filter_coverage: 0.8
+    allow_missing_announcements: true
+    allow_missing_risk_events: true
+    required_schema_version: 3

@@ -19,6 +19,9 @@ CSV_REQUIRED_COLUMNS = {
     "coverage.csv": {"factor_name"},
     "rank_ic.csv": {"factor_name"},
     "ic_summary.csv": {"factor_name"},
+    "daily_candidates.csv": {"stock_code"},
+    "stock_factor_values.csv": {"stock_code", "factor_name"},
+    "data_quality_gate.csv": {"check_name", "status", "severity"},
 }
 
 

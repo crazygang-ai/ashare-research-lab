@@ -22,6 +22,7 @@ CLI_COMMANDS = [
     "ingest",
     "validate-factors",
     "event-study",
+    "daily-report",
     "scan",
     "backtest",
     "report",

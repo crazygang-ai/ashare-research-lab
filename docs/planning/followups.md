@@ -2,6 +2,14 @@
 
 本文件登记前置 phase 已识别但当前系列 phase 暂不解决的工程债。D 系列编号来自 phase 1a-4.5 review 中的工程债扫描，保留编号是为了便于后续审计回溯。
 
+## Phase 7 更新
+
+- 已解决: `ashare daily-report` 已支持从显式 `scan`、`scoring`、`backtest`、`event_study` 和可选 `factor_validation` audited artifacts 组装正式日报，输出 Markdown、CSV、JSON 明细，先写 `data_quality_gate.csv/json`，并接入 `research_runs`、`research_run_inputs`、`research_artifacts` 与 `run_manifest.json`。
+- 已解决: `ashare stock-report` 已从 TODO 改为真实单股复核报告，基于 `as_of_date` PIT 数据和显式评分 artifact 展示候选状态、综合评分、硬过滤、因子、风险和公告证据。
+- 已解决: 服务 artifact registry 已识别 `daily_report`、`stock_report` 和 `data_quality_gate` 类型产物，可通过通用 artifact index 查询。
+- 部分解决: D22 的完整日报缺口已形成可用闭环；日报仍只汇总显式传入的既有产物，不在日报命令内重算因子、评分、回测或事件研究。
+- 仍保留: 正式生产数据管线、真实历史指数成分库、timestamp 级 PIT、更多财务质量和软风险因子、生产部署 / RBAC / durable scheduler、自动交易 / OMS / 审批流和券商接口仍不在 Phase 7 内完成。
+
 ## Phase 6 更新
 
 - 已解决: `ashare event-study` 已支持 `announcements`、`risk_events` 和 `announcement_llm_results` 三类 PIT 事件样本，输出事件样本、窗口收益、聚合统计、Markdown 报告，并接入 `research_runs`、`research_run_inputs`、`research_artifacts` 与 `run_manifest.json`。

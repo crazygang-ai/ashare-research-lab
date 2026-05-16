@@ -1,6 +1,6 @@
 """Command-line interface for ashare-research-lab."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -12,7 +12,10 @@ import click
 import pandas as pd
 import typer
 
+from ashare.audit.artifacts import artifact_records_for_paths
+from ashare.audit.config import load_audit_config
 from ashare.audit.context import AuditContext, NoopAuditContext, generated_run_id
+from ashare.audit.fingerprint import artifact_file_input, cli_param_input, data_snapshot_id
 from ashare.audit.run_store import DuplicateRunError
 from ashare.backtest.config import load_backtest_config, merge_backtest_config
 from ashare.backtest.engine import run_topn_equal_weight_backtest
@@ -34,12 +37,23 @@ from ashare.llm.parser import parse_announcements as parse_announcement_rows
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
 from ashare.reports.backtest_report import write_backtest_report
 from ashare.reports.candidate_report import write_candidate_report
+from ashare.reports.daily import build_daily_report, write_daily_report
+from ashare.reports.data_quality_gate import (
+    build_data_quality_gate,
+    write_data_quality_gate,
+)
 from ashare.reports.event_study_report import write_event_study_report
 from ashare.reports.factor_report import write_factor_validation_report
+from ashare.reports.run_summary import (
+    bundle_input_paths,
+    load_artifact_bundle,
+    read_artifact_json,
+)
 from ashare.reports.scoring_report import (
     write_scoring_report,
     write_validation_failure_artifacts,
 )
+from ashare.reports.stock_report import build_stock_report, write_stock_report
 from ashare.scan.candidates import HARD_FILTER_NAMES, scan_candidates
 from ashare.scoring.config import (
     enabled_groups,
@@ -146,6 +160,118 @@ def _resolve_output_dir(output_dir: Path | None, context: AuditContext | NoopAud
     if resolved is None:
         raise click.ClickException("output_dir could not be resolved.")
     return Path(resolved)
+
+
+def _audit_config_for_context(
+    context: AuditContext | NoopAuditContext,
+    audit_config: Path,
+) -> Any:
+    if isinstance(context, AuditContext):
+        return context.config
+    return load_audit_config(audit_config)
+
+
+def _actual_run_mode(
+    context: AuditContext | NoopAuditContext,
+    requested_run_mode: str | None,
+    audit_config: Path,
+) -> str:
+    if isinstance(context, AuditContext):
+        return context.run_mode
+    return requested_run_mode or _audit_config_for_context(context, audit_config).default_run_mode
+
+
+def _audit_metadata(
+    context: AuditContext | NoopAuditContext,
+    *,
+    run_id: str,
+    run_mode: str,
+    db_path: Path,
+    output_dir: Path,
+) -> dict[str, object]:
+    if isinstance(context, AuditContext):
+        snapshot_id = data_snapshot_id(context.inputs)
+        return {
+            "run_id": context.run_id,
+            "run_mode": context.run_mode,
+            "db_path": str(db_path),
+            "output_dir": str(output_dir),
+            "config_hash": context.config_hash,
+            "data_snapshot_id": snapshot_id,
+            "git_sha": context.git_status.sha,
+            "worktree_clean": context.git_status.worktree_clean,
+            "dirty_files": list(context.git_status.dirty_files),
+        }
+    return {
+        "run_id": run_id,
+        "run_mode": run_mode,
+        "db_path": str(db_path),
+        "output_dir": str(output_dir),
+        "config_hash": None,
+        "data_snapshot_id": None,
+        "git_sha": None,
+        "worktree_clean": None,
+        "dirty_files": [],
+    }
+
+
+def _add_cli_param_audit_input(
+    context: AuditContext | NoopAuditContext,
+    *,
+    name: str,
+    value: str | None,
+    source_run_id: str | None = None,
+) -> None:
+    if not isinstance(context, AuditContext) or value is None:
+        return
+    context.add_input(
+        cli_param_input(
+            run_id=context.run_id,
+            name=name,
+            value=value,
+            source_run_id=source_run_id,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+
+def _add_artifact_file_inputs(
+    context: AuditContext | NoopAuditContext,
+    paths: list[Path],
+) -> None:
+    if not isinstance(context, AuditContext):
+        return
+    created_at = datetime.now(timezone.utc)
+    for path in paths:
+        context.add_input(
+            artifact_file_input(
+                repo_root=context.config.repo_root,
+                run_id=context.run_id,
+                path=path,
+                created_at=created_at,
+            )
+        )
+
+
+def _add_artifacts_with_kind(
+    context: AuditContext | NoopAuditContext,
+    *,
+    artifact_kind: str,
+    paths: dict[str, Path],
+) -> None:
+    if not isinstance(context, AuditContext) or not paths:
+        return
+    context.artifacts.extend(
+        artifact_records_for_paths(
+            repo_root=context.config.repo_root,
+            run_id=context.run_id,
+            artifact_kind=artifact_kind,
+            paths=paths,
+            created_at=datetime.now(timezone.utc),
+            hash_files=bool(context.config.artifacts.get("hash_files", True)),
+            csv_row_count_enabled=bool(context.config.artifacts.get("csv_row_count", True)),
+        )
+    )
 
 
 def _artifact_input_files(path: Path) -> list[Path]:
@@ -1611,13 +1737,537 @@ def report(
     _succeed_audit(context, paths)
 
 
+@app.command(name="daily-report")
+def daily_report(
+    as_of: str = typer.Option(..., "--as-of"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    scan_run_id: str | None = typer.Option(None, "--scan-run-id"),
+    score_run_id: str | None = typer.Option(None, "--score-run-id"),
+    backtest_run_id: str | None = typer.Option(None, "--backtest-run-id"),
+    event_study_run_id: str | None = typer.Option(None, "--event-study-run-id"),
+    factor_validation_run_id: str | None = typer.Option(None, "--factor-validation-run-id"),
+    compare_as_of: str | None = typer.Option(None, "--compare-as-of"),
+    compare_scan_run_id: str | None = typer.Option(None, "--compare-scan-run-id"),
+    compare_score_run_id: str | None = typer.Option(None, "--compare-score-run-id"),
+    index_code: str | None = typer.Option(None, "--index-code"),
+    top: int = typer.Option(20, "--top"),
+    recent_days: int = typer.Option(30, "--recent-days"),
+    allow_latest_artifacts: bool = typer.Option(
+        False,
+        "--allow-latest-artifacts/--no-allow-latest-artifacts",
+    ),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
+    service_config: Path = typer.Option(Path("configs/service.yaml"), "--service-config"),
+) -> None:
+    """Generate a Phase 7 daily research report from explicit audited artifacts."""
+    try:
+        parsed_as_of = parse_as_of_date(as_of)
+        if recent_days < 0:
+            raise click.ClickException("--recent-days must be non-negative.")
+        if top < 0:
+            raise click.ClickException("--top must be non-negative.")
+        has_compare_run = compare_scan_run_id is not None or compare_score_run_id is not None
+        if has_compare_run and compare_as_of is None:
+            raise click.ClickException("--compare-as-of is required when compare run ids are provided.")
+        if compare_as_of is not None and not has_compare_run:
+            raise click.ClickException(
+                "--compare-as-of requires --compare-scan-run-id or --compare-score-run-id."
+            )
+        parsed_compare_as_of = parse_as_of_date(compare_as_of) if compare_as_of else None
+    except click.ClickException:
+        raise
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    resolved_run_id = run_id or generated_run_id("daily-report")
+    context = _begin_audit(
+        command="daily-report",
+        artifact_kind="daily_report",
+        db_path=db_path,
+        run_id=resolved_run_id,
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=parsed_as_of.isoformat(),
+        source_run_id=source_run_id,
+        params={
+            "as_of": as_of,
+            "source_run_id": source_run_id,
+            "scan_run_id": scan_run_id,
+            "score_run_id": score_run_id,
+            "backtest_run_id": backtest_run_id,
+            "event_study_run_id": event_study_run_id,
+            "factor_validation_run_id": factor_validation_run_id,
+            "compare_as_of": compare_as_of,
+            "compare_scan_run_id": compare_scan_run_id,
+            "compare_score_run_id": compare_score_run_id,
+            "index_code": index_code,
+            "top": top,
+            "recent_days": recent_days,
+            "allow_latest_artifacts": allow_latest_artifacts,
+            "overwrite": overwrite,
+            "service_config": str(service_config),
+        },
+        config_paths=[audit_config, service_config, Path("configs/data_dictionary.yaml")],
+    )
+    audit_conf = _audit_config_for_context(context, audit_config)
+    actual_run_mode = _actual_run_mode(context, run_mode, audit_config)
+    output = _resolve_output_dir(output_dir, context)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
+    close_connection = not isinstance(context, AuditContext)
+    try:
+        repo_root = audit_conf.repo_root
+        scan_bundle = load_artifact_bundle(
+            connection,
+            kind="scan",
+            run_id=scan_run_id,
+            repo_root=repo_root,
+            allow_latest=allow_latest_artifacts,
+            required_files=("candidates.csv", "candidate_list.md"),
+        )
+        score_bundle = load_artifact_bundle(
+            connection,
+            kind="scoring",
+            run_id=score_run_id,
+            repo_root=repo_root,
+            allow_latest=allow_latest_artifacts,
+            required_files=(
+                "scored_candidates.csv",
+                "score_metadata.json",
+                "factor_normalized_scores.csv",
+                "hard_filter_exclusions.csv",
+                "validation_gate.csv",
+            ),
+        )
+        backtest_bundle = load_artifact_bundle(
+            connection,
+            kind="backtest",
+            run_id=backtest_run_id,
+            repo_root=repo_root,
+            allow_latest=allow_latest_artifacts,
+            required_files=("metrics.csv",),
+        )
+        event_bundle = load_artifact_bundle(
+            connection,
+            kind="event_study",
+            run_id=event_study_run_id,
+            repo_root=repo_root,
+            allow_latest=allow_latest_artifacts,
+            required_files=("event_summary.csv",),
+        )
+        factor_bundle = (
+            load_artifact_bundle(
+                connection,
+                kind="factor_validation",
+                run_id=factor_validation_run_id,
+                repo_root=repo_root,
+                allow_latest=False,
+                required_files=("ic_summary.csv",),
+            )
+            if factor_validation_run_id is not None
+            else None
+        )
+        compare_scan_bundle = (
+            load_artifact_bundle(
+                connection,
+                kind="scan",
+                run_id=compare_scan_run_id,
+                repo_root=repo_root,
+                allow_latest=False,
+                required_files=("candidates.csv",),
+            )
+            if compare_scan_run_id is not None
+            else None
+        )
+        compare_score_bundle = (
+            load_artifact_bundle(
+                connection,
+                kind="scoring",
+                run_id=compare_score_run_id,
+                repo_root=repo_root,
+                allow_latest=False,
+                required_files=("scored_candidates.csv",),
+            )
+            if compare_score_run_id is not None
+            else None
+        )
+        all_bundles = [
+            scan_bundle,
+            score_bundle,
+            backtest_bundle,
+            event_bundle,
+            *([factor_bundle] if factor_bundle is not None else []),
+            *([compare_scan_bundle] if compare_scan_bundle is not None else []),
+            *([compare_score_bundle] if compare_score_bundle is not None else []),
+        ]
+        _add_artifact_file_inputs(context, bundle_input_paths(all_bundles))
+        for option_name, bundle in [
+            ("scan_run_id", scan_bundle),
+            ("score_run_id", score_bundle),
+            ("backtest_run_id", backtest_bundle),
+            ("event_study_run_id", event_bundle),
+            ("factor_validation_run_id", factor_bundle),
+            ("compare_scan_run_id", compare_scan_bundle),
+            ("compare_score_run_id", compare_score_bundle),
+        ]:
+            if bundle is not None:
+                _add_cli_param_audit_input(
+                    context,
+                    name=option_name,
+                    value=bundle.run_id or bundle.requested_run_id,
+                    source_run_id=bundle.run_id,
+                )
+
+        score_metadata = read_artifact_json(score_bundle, "score_metadata.json")
+        resolved_index_code = index_code or (
+            str(score_metadata["index_code"]) if score_metadata.get("index_code") else None
+        )
+        context.add_duckdb_table_input("trading_calendar", predicate=f"trade_date={as_of}")
+        context.add_duckdb_table_input("daily_prices", predicate=f"trade_date={as_of}")
+        context.add_duckdb_table_input("valuation_daily", predicate=f"trade_date={as_of}")
+        context.add_duckdb_table_input(
+            "factor_values",
+            source_run_id=source_run_id,
+            predicate=f"source_run_id={source_run_id}; as_of_date={as_of}",
+        )
+        context.add_duckdb_table_input("universe_members", predicate=f"index_code={resolved_index_code}")
+        context.add_duckdb_table_input("announcements", predicate=f"effective_date<={as_of}")
+        context.add_duckdb_table_input("risk_events", predicate=f"effective_date<={as_of}")
+        context.add_duckdb_table_input("research_artifacts", predicate="Phase 7 input artifact lookup")
+
+        gate_section = audit_conf.data.get("daily_report", {})
+        gate_config = (
+            gate_section.get("data_quality", {})
+            if isinstance(gate_section, dict)
+            else {}
+        )
+        gate = build_data_quality_gate(
+            connection,
+            as_of_date=parsed_as_of,
+            source_run_id=source_run_id,
+            input_artifacts=[
+                bundle
+                for bundle in [
+                    scan_bundle,
+                    score_bundle,
+                    backtest_bundle,
+                    event_bundle,
+                    *([compare_scan_bundle] if compare_scan_bundle is not None else []),
+                    *([compare_score_bundle] if compare_score_bundle is not None else []),
+                    *([factor_bundle] if factor_bundle is not None else []),
+                ]
+                if bundle is not None
+            ],
+            config_paths=[audit_config, service_config, Path("configs/data_dictionary.yaml")],
+            repo_root=repo_root,
+            index_code=resolved_index_code,
+            gate_config=gate_config,
+        )
+        gate_paths = write_data_quality_gate(
+            gate,
+            output,
+            metadata={
+                "run_id": resolved_run_id,
+                "run_mode": actual_run_mode,
+                "db_path": str(db_path),
+            },
+            overwrite=overwrite or overwrite_run,
+        )
+        _add_artifacts_with_kind(
+            context,
+            artifact_kind="data_quality_gate",
+            paths=gate_paths,
+        )
+        if gate.has_blocking_failures and actual_run_mode == "formal":
+            for key, path in gate_paths.items():
+                typer.echo(f"{key}: {path}")
+            exc = click.ClickException("Data quality gate failed with blocking failure(s).")
+            _fail_audit(context, exc)
+            raise exc
+
+        metadata = {
+            **_audit_metadata(
+                context,
+                run_id=resolved_run_id,
+                run_mode=actual_run_mode,
+                db_path=db_path,
+                output_dir=output,
+            ),
+            "scan_run_id": scan_bundle.run_id,
+            "score_run_id": score_bundle.run_id,
+            "backtest_run_id": backtest_bundle.run_id,
+            "event_study_run_id": event_bundle.run_id,
+            "factor_validation_run_id": factor_bundle.run_id if factor_bundle else None,
+            "compare_as_of": parsed_compare_as_of.isoformat() if parsed_compare_as_of else None,
+            "compare_scan_run_id": compare_scan_bundle.run_id if compare_scan_bundle else None,
+            "compare_score_run_id": compare_score_bundle.run_id if compare_score_bundle else None,
+            "allow_latest_artifacts": allow_latest_artifacts,
+            "index_code": resolved_index_code,
+            "top_n": top,
+        }
+        report = build_daily_report(
+            connection,
+            as_of_date=parsed_as_of,
+            source_run_id=source_run_id,
+            scan_bundle=scan_bundle,
+            score_bundle=score_bundle,
+            backtest_bundle=backtest_bundle,
+            event_study_bundle=event_bundle,
+            factor_validation_bundle=factor_bundle,
+            compare_scan_bundle=compare_scan_bundle,
+            compare_score_bundle=compare_score_bundle,
+            data_quality_gate=gate,
+            repo_root=repo_root,
+            metadata=metadata,
+            recent_days=recent_days,
+        )
+        report_paths = write_daily_report(
+            report,
+            output,
+            overwrite=overwrite or overwrite_run,
+        )
+    except (OSError, RuntimeError, ValueError, duckdb.Error, FileNotFoundError) as exc:
+        _fail_audit(context, exc)
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        if close_connection:
+            connection.close()
+
+    typer.echo("daily report is for research only and is not a trading instruction.")
+    typer.echo("日报仅供研究复盘，不是交易指令。")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"run_mode: {actual_run_mode}")
+    for status, count in gate.summary.items():
+        typer.echo(f"data_quality_{status}: {count}")
+    for key, path in {**gate_paths, **report_paths}.items():
+        typer.echo(f"{key}: {path}")
+    _succeed_audit(context, report_paths)
+
+
 @app.command(name="stock-report")
 def stock_report(
     code: str = typer.Option(..., "--code"),
     as_of: str = typer.Option(..., "--as-of"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    source_run_id: str = typer.Option(..., "--source-run-id"),
+    score_run_id: str = typer.Option(..., "--score-run-id"),
+    scan_run_id: str | None = typer.Option(None, "--scan-run-id"),
+    backtest_run_id: str | None = typer.Option(None, "--backtest-run-id"),
+    event_study_run_id: str | None = typer.Option(None, "--event-study-run-id"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
-    """Print stock-report parameters without writing reports."""
-    _echo_todo("stock-report", code=code, as_of=as_of)
+    """Generate a Phase 7 single-stock research review report."""
+    try:
+        parsed_as_of = parse_as_of_date(as_of)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    resolved_run_id = run_id or generated_run_id("stock-report")
+    context = _begin_audit(
+        command="stock-report",
+        artifact_kind="stock_report",
+        db_path=db_path,
+        run_id=resolved_run_id,
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=parsed_as_of.isoformat(),
+        source_run_id=source_run_id,
+        params={
+            "code": code,
+            "as_of": as_of,
+            "source_run_id": source_run_id,
+            "score_run_id": score_run_id,
+            "scan_run_id": scan_run_id,
+            "backtest_run_id": backtest_run_id,
+            "event_study_run_id": event_study_run_id,
+            "overwrite": overwrite,
+        },
+        config_paths=[audit_config, Path("configs/data_dictionary.yaml")],
+    )
+    audit_conf = _audit_config_for_context(context, audit_config)
+    actual_run_mode = _actual_run_mode(context, run_mode, audit_config)
+    output = _resolve_output_dir(output_dir, context)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
+    close_connection = not isinstance(context, AuditContext)
+    try:
+        repo_root = audit_conf.repo_root
+        score_bundle = load_artifact_bundle(
+            connection,
+            kind="scoring",
+            run_id=score_run_id,
+            repo_root=repo_root,
+            allow_latest=False,
+            required_files=(
+                "scored_candidates.csv",
+                "score_metadata.json",
+                "score_breakdown.csv",
+                "factor_normalized_scores.csv",
+                "hard_filter_exclusions.csv",
+            ),
+        )
+        scan_bundle = (
+            load_artifact_bundle(
+                connection,
+                kind="scan",
+                run_id=scan_run_id,
+                repo_root=repo_root,
+                allow_latest=False,
+                required_files=("candidates.csv",),
+            )
+            if scan_run_id is not None
+            else None
+        )
+        backtest_bundle = (
+            load_artifact_bundle(
+                connection,
+                kind="backtest",
+                run_id=backtest_run_id,
+                repo_root=repo_root,
+                allow_latest=False,
+                required_files=("target_weights.csv", "holdings.csv"),
+            )
+            if backtest_run_id is not None
+            else None
+        )
+        event_bundle = (
+            load_artifact_bundle(
+                connection,
+                kind="event_study",
+                run_id=event_study_run_id,
+                repo_root=repo_root,
+                allow_latest=False,
+                required_files=("event_samples.csv", "event_summary.csv"),
+            )
+            if event_study_run_id is not None
+            else None
+        )
+        required_missing = score_bundle.run_id is None or bool(score_bundle.warnings)
+        optional_missing = [
+            bundle
+            for bundle in [scan_bundle, backtest_bundle, event_bundle]
+            if bundle is not None and (bundle.run_id is None or bundle.warnings)
+        ]
+        if required_missing:
+            raise click.ClickException(
+                "Required scoring artifact is missing or incomplete: "
+                + "; ".join(score_bundle.warnings)
+            )
+        if actual_run_mode == "formal" and optional_missing:
+            messages = [
+                f"{bundle.kind}: " + "; ".join(bundle.warnings)
+                for bundle in optional_missing
+            ]
+            raise click.ClickException(
+                "Formal stock-report received incomplete optional artifact(s): "
+                + " | ".join(messages)
+            )
+
+        all_bundles = [
+            bundle
+            for bundle in [score_bundle, scan_bundle, backtest_bundle, event_bundle]
+            if bundle is not None
+        ]
+        _add_artifact_file_inputs(context, bundle_input_paths(all_bundles))
+        for option_name, bundle in [
+            ("score_run_id", score_bundle),
+            ("scan_run_id", scan_bundle),
+            ("backtest_run_id", backtest_bundle),
+            ("event_study_run_id", event_bundle),
+        ]:
+            if bundle is not None:
+                _add_cli_param_audit_input(
+                    context,
+                    name=option_name,
+                    value=bundle.run_id or bundle.requested_run_id,
+                    source_run_id=bundle.run_id,
+                )
+        score_metadata = read_artifact_json(score_bundle, "score_metadata.json")
+        context.add_duckdb_table_input(
+            "factor_values",
+            source_run_id=source_run_id,
+            predicate=f"stock_code={code}; source_run_id={source_run_id}; as_of_date={as_of}",
+        )
+        context.add_duckdb_table_input("securities", predicate=f"stock_code={code}; as_of={as_of}")
+        context.add_duckdb_table_input(
+            "industry_classifications",
+            predicate=f"stock_code={code}; as_of={as_of}",
+        )
+        context.add_duckdb_table_input("universe_members", predicate=f"stock_code={code}; as_of={as_of}")
+        context.add_duckdb_table_input("announcements", predicate=f"stock_code={code}; effective_date<={as_of}")
+        context.add_duckdb_table_input("risk_events", predicate=f"stock_code={code}; effective_date<={as_of}")
+        metadata = {
+            **_audit_metadata(
+                context,
+                run_id=resolved_run_id,
+                run_mode=actual_run_mode,
+                db_path=db_path,
+                output_dir=output,
+            ),
+            "score_run_id": score_bundle.run_id,
+            "scan_run_id": scan_bundle.run_id if scan_bundle else None,
+            "backtest_run_id": backtest_bundle.run_id if backtest_bundle else None,
+            "event_study_run_id": event_bundle.run_id if event_bundle else None,
+            "index_code": score_metadata.get("index_code"),
+        }
+        report = build_stock_report(
+            connection,
+            code=code,
+            as_of_date=parsed_as_of,
+            source_run_id=source_run_id,
+            score_bundle=score_bundle,
+            scan_bundle=scan_bundle,
+            backtest_bundle=backtest_bundle,
+            event_study_bundle=event_bundle,
+            metadata=metadata,
+        )
+        paths = write_stock_report(
+            report,
+            output,
+            overwrite=overwrite or overwrite_run,
+        )
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
+    except (OSError, RuntimeError, ValueError, duckdb.Error, FileNotFoundError) as exc:
+        _fail_audit(context, exc)
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        if close_connection:
+            connection.close()
+
+    typer.echo("stock report is for research only and is not a trading instruction.")
+    typer.echo("单股报告仅供研究复核，不是交易指令。")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"stock_code: {code}")
+    typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
+    typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"score_run_id: {score_run_id}")
+    for key, path in paths.items():
+        typer.echo(f"{key}: {path}")
+    _succeed_audit(context, paths)
 
 
 @app.command(name="db-init")

@@ -33,6 +33,22 @@ ARTIFACT_REQUIRED_FILES: dict[str, tuple[str, ...]] = {
         "event_window_returns.csv",
         "event_summary.csv",
     ),
+    "daily_report": (
+        "daily_report.md",
+        "daily_candidates.csv",
+        "daily_score_summary.csv",
+        "daily_metadata.json",
+    ),
+    "stock_report": (
+        "stock_report.md",
+        "stock_factor_values.csv",
+        "stock_score_breakdown.csv",
+        "stock_metadata.json",
+    ),
+    "data_quality_gate": (
+        "data_quality_gate.csv",
+        "data_quality_gate.json",
+    ),
 }
 
 ARTIFACT_MARKDOWN_FILES = {
@@ -41,6 +57,8 @@ ARTIFACT_MARKDOWN_FILES = {
     "backtest": "backtest_report.md",
     "factor_validation": "factor_validation_report.md",
     "event_study": "event_study_report.md",
+    "daily_report": "daily_report.md",
+    "stock_report": "stock_report.md",
 }
 
 ARTIFACT_PRIMARY_CSV = {
@@ -49,6 +67,9 @@ ARTIFACT_PRIMARY_CSV = {
     "backtest": "metrics.csv",
     "factor_validation": "ic_summary.csv",
     "event_study": "event_summary.csv",
+    "daily_report": "daily_candidates.csv",
+    "stock_report": "stock_factor_values.csv",
+    "data_quality_gate": "data_quality_gate.csv",
 }
 
 
@@ -127,7 +148,9 @@ class ArtifactRegistry:
         record = self.get(artifact_id)
         if record is None:
             return None
-        filename = ARTIFACT_MARKDOWN_FILES[record.kind]
+        filename = ARTIFACT_MARKDOWN_FILES.get(record.kind)
+        if filename is None:
+            return None
         path = record.files.get(filename)
         if path is None:
             return None
@@ -315,7 +338,14 @@ class ArtifactRegistry:
         ]
         files: dict[str, Path] = {}
         file_display: dict[str, str] = {}
-        known_files = required.union({"score_metadata.json"})
+        known_files = required.union(
+            {
+                "score_metadata.json",
+                "daily_metadata.json",
+                "stock_metadata.json",
+                "data_quality_gate.json",
+            }
+        )
         for filename in sorted(known_files.intersection(present)):
             path = (directory / filename).resolve()
             if _is_inside(path, root):
@@ -378,7 +408,12 @@ def _is_inside(path: Path, root: Path) -> bool:
 
 
 def _load_metadata(files: dict[str, Path]) -> dict[str, Any]:
-    metadata_path = files.get("score_metadata.json")
+    metadata_path = (
+        files.get("score_metadata.json")
+        or files.get("daily_metadata.json")
+        or files.get("stock_metadata.json")
+        or files.get("data_quality_gate.json")
+    )
     if metadata_path is None:
         return {}
     try:

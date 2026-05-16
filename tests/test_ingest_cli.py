@@ -126,6 +126,7 @@ def test_cli_help_lists_required_commands() -> None:
         "ingest",
         "validate-factors",
         "event-study",
+        "daily-report",
         "scan",
         "backtest",
         "report",

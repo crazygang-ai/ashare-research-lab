@@ -125,3 +125,46 @@ def test_service_fallbacks_to_file_scan_without_phase5_tables(tmp_path: Path) ->
     response = client.get("/api/v1/scans/latest")
     assert response.status_code == 200
     assert response.json()["rows"][0]["stock_code"] == "000001.SZ"
+
+
+def test_service_registry_recognizes_phase7_report_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "reports"
+    daily = root / "daily"
+    stock = root / "stock"
+    daily.mkdir(parents=True)
+    stock.mkdir(parents=True)
+    (daily / "daily_report.md").write_text("# Daily Research Report\n", encoding="utf-8")
+    (daily / "daily_candidates.csv").write_text("stock_code\n000001.SZ\n", encoding="utf-8")
+    (daily / "daily_score_summary.csv").write_text("stock_code\n000001.SZ\n", encoding="utf-8")
+    (daily / "daily_metadata.json").write_text(
+        '{"as_of_date":"2026-01-02","run_id":"daily-run"}\n',
+        encoding="utf-8",
+    )
+    (stock / "stock_report.md").write_text("# Stock Research Report\n", encoding="utf-8")
+    (stock / "stock_factor_values.csv").write_text(
+        "stock_code,factor_name\n000001.SZ,return_20d\n",
+        encoding="utf-8",
+    )
+    (stock / "stock_score_breakdown.csv").write_text(
+        "stock_code,score_group\n000001.SZ,momentum\n",
+        encoding="utf-8",
+    )
+    (stock / "stock_metadata.json").write_text(
+        '{"stock_code":"000001.SZ","run_id":"stock-run"}\n',
+        encoding="utf-8",
+    )
+
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "database": {"db_path": str(tmp_path / "missing.duckdb"), "read_only": True},
+            "artifacts": {"roots": [str(root)]},
+        },
+    )
+    client = TestClient(app)
+
+    status = client.get("/api/v1/status").json()
+    assert "daily_report" in status["artifacts"]["known_kinds"]
+    assert "stock_report" in status["artifacts"]["known_kinds"]
+    assert client.get("/api/v1/artifacts", params={"kind": "daily_report"}).json()["artifacts"]
+    assert client.get("/api/v1/artifacts", params={"kind": "stock_report"}).json()["artifacts"]

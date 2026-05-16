@@ -19,6 +19,9 @@ artifacts:
     - backtest
     - factor_validation
     - event_study
+    - daily_report
+    - stock_report
+    - data_quality_gate
     - announcement_parse
     - workflow
     - manifest

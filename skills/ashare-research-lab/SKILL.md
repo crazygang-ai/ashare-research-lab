@@ -74,6 +74,18 @@ Run a topn backtest:
 conda run -n ashare-research-lab ashare backtest --strategy topn-equal --from 2026-03-30 --to 2026-06-26 --db-path data/processed/ashare_phase4.duckdb --index-code LOCAL_FIXTURE --source-run-id phase4-service --sort-factor return_20d --top 3 --output-dir data/reports/generated/phase4/backtest --overwrite
 ```
 
+Create a Phase 7 daily report from explicit audited artifacts:
+
+```bash
+conda run -n ashare-research-lab ashare daily-report --as-of 2026-06-26 --db-path data/processed/ashare_phase4.duckdb --source-run-id phase4-service --scan-run-id SCAN_RUN_ID --score-run-id SCORE_RUN_ID --backtest-run-id BACKTEST_RUN_ID --event-study-run-id EVENT_STUDY_RUN_ID --output-dir data/reports/generated/phase7/daily/daily-20260626 --run-id daily-20260626 --run-mode exploratory
+```
+
+Create a Phase 7 single-stock review report:
+
+```bash
+conda run -n ashare-research-lab ashare stock-report --code 000001.SZ --as-of 2026-06-26 --db-path data/processed/ashare_phase4.duckdb --source-run-id phase4-service --score-run-id SCORE_RUN_ID --output-dir data/reports/generated/phase7/stock/000001.SZ-20260626 --run-id stock-000001SZ-20260626 --run-mode exploratory
+```
+
 Run service smoke checks:
 
 ```bash
@@ -90,12 +102,16 @@ Generated reports live under `data/reports/generated/`. The common Phase 4 outpu
 - candidate scan: `candidate_list.md`, `candidates.csv`
 - scoring: `scoring_report.md`, `scored_candidates.csv`, `score_metadata.json`
 - backtest: `backtest_report.md`, `metrics.csv`, `equity_curve.csv`
+- daily report: `daily_report.md`, `daily_candidates.csv`, `daily_score_summary.csv`, `daily_metadata.json`
+- stock report: `stock_report.md`, `stock_factor_values.csv`, `stock_score_breakdown.csv`, `stock_metadata.json`
+- data quality gate: `data_quality_gate.csv`, `data_quality_gate.json`
 
 When explaining reports, keep the wording research-focused:
 
 - Candidate lists are screening outputs, not a buy list.
 - Composite scoring is a research ranking, not a trading instruction.
 - Backtests are historical simulations with assumptions and costs, not executable performance promises.
+- Daily reports and stock reports are review packets assembled from explicit audited artifacts, not trading instructions.
 - Factor validation forward returns are statistical labels, not realized tradable returns.
 
 Use the phrase `not a trading instruction` when summarizing candidate, scoring, or backtest output.
