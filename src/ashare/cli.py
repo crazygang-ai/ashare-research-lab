@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import hashlib
+import json
 from pathlib import Path
 from numbers import Integral
 from typing import Any
@@ -11,6 +12,8 @@ import click
 import pandas as pd
 import typer
 
+from ashare.audit.context import AuditContext, NoopAuditContext, generated_run_id
+from ashare.audit.run_store import DuplicateRunError
 from ashare.backtest.config import load_backtest_config, merge_backtest_config
 from ashare.backtest.engine import run_topn_equal_weight_backtest
 from ashare.factors.calculator import (
@@ -20,6 +23,7 @@ from ashare.factors.calculator import (
 )
 from ashare.factors.config import load_factor_config
 from ashare.factors.store import write_factor_values
+from ashare.factors.store import delete_factor_values_for_source_run
 from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
 from ashare.ingest.akshare_provider import AkShareProvider
 from ashare.ingest.announcements import ingest_announcements as ingest_announcement_csvs
@@ -56,6 +60,120 @@ from ashare.validation.config import load_validation_config, merge_validation_co
 from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
 
 app = typer.Typer(help="A-share research assistant CLI.")
+
+
+def _begin_audit(
+    *,
+    command: str,
+    artifact_kind: str,
+    db_path: Path,
+    run_id: str,
+    run_mode: str | None,
+    overwrite_run: bool,
+    audit_config: Path,
+    output_dir: Path | None,
+    as_of_date: str | None,
+    source_run_id: str | None,
+    params: dict[str, object],
+    config_paths: list[Path] | None = None,
+    artifact_input_paths: list[Path] | None = None,
+) -> AuditContext | NoopAuditContext:
+    try:
+        context = AuditContext.maybe(
+            command=command,
+            artifact_kind=artifact_kind,
+            db_path=db_path,
+            run_id=run_id,
+            run_mode=run_mode,
+            overwrite_run=overwrite_run,
+            audit_config_path=audit_config,
+            output_dir=output_dir,
+            as_of_date=as_of_date,
+            source_run_id=source_run_id,
+            params=params,
+            config_paths=config_paths or [],
+            artifact_input_paths=artifact_input_paths or [],
+        )
+        context.begin()
+        return context
+    except DuplicateRunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _fail_audit(context: AuditContext | NoopAuditContext | None, exc: BaseException) -> None:
+    if context is None:
+        return
+    try:
+        context.fail(str(exc))
+    except Exception as audit_exc:
+        typer.echo(f"WARNING: failed to write audit failure manifest: {audit_exc}")
+    finally:
+        context.close()
+
+
+def _succeed_audit(context: AuditContext | NoopAuditContext, paths: dict[str, Path] | None = None) -> None:
+    if paths:
+        context.add_artifacts(paths)
+    context.succeed()
+    _print_audit_summary(context)
+    context.close()
+
+
+def _print_audit_summary(context: AuditContext | NoopAuditContext) -> None:
+    for warning in getattr(context, "warnings", []):
+        typer.echo(f"WARNING: {warning}")
+    run_id = getattr(context, "run_id", None)
+    manifest_path = getattr(context, "manifest_path", None)
+    if run_id:
+        typer.echo(f"run_id: {run_id}")
+    if manifest_path:
+        display = (
+            context.manifest_display_path
+            if isinstance(context, AuditContext)
+            else str(manifest_path)
+        )
+        typer.echo(f"manifest: {display}")
+
+
+def _resolve_output_dir(output_dir: Path | None, context: AuditContext | NoopAuditContext) -> Path:
+    if output_dir is not None:
+        return output_dir
+    resolved = getattr(context, "output_dir", None)
+    if resolved is None:
+        raise click.ClickException("output_dir could not be resolved.")
+    return Path(resolved)
+
+
+def _artifact_input_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if not path.exists() or not path.is_dir():
+        return []
+    return sorted(item for item in path.iterdir() if item.is_file())
+
+
+def _add_factor_calculation_inputs(
+    context: AuditContext | NoopAuditContext,
+    *,
+    index_code: str | None,
+    predicate: str,
+) -> None:
+    for table_name in [
+        "trading_calendar",
+        "securities",
+        "daily_prices",
+        "valuation_daily",
+        "st_status",
+        "fundamental_reports",
+    ]:
+        context.add_duckdb_table_input(table_name, predicate=predicate)
+    if index_code is not None:
+        context.add_duckdb_table_input(
+            "universe_members",
+            predicate=f"index_code={index_code}; {predicate}",
+        )
 
 
 def _echo_todo(command: str, **params: Any) -> None:
@@ -346,8 +464,42 @@ def parse_announcements(
     model: str = typer.Option("fixture-llm", "--model"),
     limit: int | None = typer.Option(None, "--limit"),
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
     """Parse PIT-visible Phase 2 announcements with a fixture or optional LLM client."""
+    context = _begin_audit(
+        command="parse-announcements",
+        artifact_kind="announcement_parse",
+        db_path=db_path,
+        run_id=run_id or parse_run_id,
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=as_of or to,
+        source_run_id=None,
+        params={
+            "from": from_,
+            "to": to,
+            "as_of": as_of,
+            "source_tag": source_tag,
+            "parse_run_id": parse_run_id,
+            "llm_mode": llm_mode,
+            "fixture_response_dir": str(fixture_response_dir) if fixture_response_dir else None,
+            "fixture_variant": fixture_variant,
+            "model": model,
+            "limit": limit,
+            "overwrite": overwrite,
+        },
+        config_paths=[Path("configs/llm.yaml")],
+        artifact_input_paths=_artifact_input_files(fixture_response_dir)
+        if fixture_response_dir is not None
+        else [],
+    )
     try:
         result = parse_announcement_rows(
             db_path=db_path,
@@ -363,24 +515,54 @@ def parse_announcements(
             limit=limit,
             overwrite=overwrite,
         )
+        context.add_duckdb_table_input(
+            "announcements",
+            predicate=f"effective_date {from_}..{to}; source_tag={source_tag}",
+        )
+        context.add_duckdb_table_input(
+            "announcement_llm_results",
+            predicate=f"parse_run_id={parse_run_id}",
+        )
+        summary_path = _resolve_output_dir(output_dir, context) / "parse_summary.json"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "parse_run_id": result.parse_run_id,
+                    "llm_mode": result.llm_mode,
+                    "model_name": result.model_name,
+                    "announcement_count": result.announcement_count,
+                    "success_count": result.success_count,
+                    "failed_count": result.failed_count,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        typer.echo("Announcement parse completed.")
+        typer.echo(f"Database path: {result.db_path}")
+        typer.echo(f"date_filter: effective_date {from_} to {to}")
+        if as_of is not None:
+            typer.echo(f"as_of: {as_of}")
+        if source_tag is not None:
+            typer.echo(f"source_tag: {source_tag}")
+        typer.echo(f"parse_run_id: {result.parse_run_id}")
+        typer.echo(f"llm_mode: {result.llm_mode}")
+        typer.echo(f"model: {result.model_name}")
+        typer.echo(f"announcement_count: {result.announcement_count}")
+        typer.echo(f"success_count: {result.success_count}")
+        typer.echo(f"failed_count: {result.failed_count}")
+        typer.echo(f"input_tokens: {result.input_tokens}")
+        typer.echo(f"output_tokens: {result.output_tokens}")
+        _succeed_audit(context, {"summary": summary_path})
     except (OSError, RuntimeError, ValueError, duckdb.Error) as exc:
+        _fail_audit(context, exc)
         raise click.ClickException(str(exc)) from exc
-
-    typer.echo("Announcement parse completed.")
-    typer.echo(f"Database path: {result.db_path}")
-    typer.echo(f"date_filter: effective_date {from_} to {to}")
-    if as_of is not None:
-        typer.echo(f"as_of: {as_of}")
-    if source_tag is not None:
-        typer.echo(f"source_tag: {source_tag}")
-    typer.echo(f"parse_run_id: {result.parse_run_id}")
-    typer.echo(f"llm_mode: {result.llm_mode}")
-    typer.echo(f"model: {result.model_name}")
-    typer.echo(f"announcement_count: {result.announcement_count}")
-    typer.echo(f"success_count: {result.success_count}")
-    typer.echo(f"failed_count: {result.failed_count}")
-    typer.echo(f"input_tokens: {result.input_tokens}")
-    typer.echo(f"output_tokens: {result.output_tokens}")
 
 
 @app.command(name="validate-factors")
@@ -394,6 +576,11 @@ def validate_factors(
     n_groups: int | None = typer.Option(None, "--n-groups"),
     validation_config: Path = typer.Option(Path("configs/validation.yaml"), "--validation-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
     include_hard_filters: bool = typer.Option(False, "--include-hard-filters"),
     verbose: bool = typer.Option(False, "--verbose"),
 ) -> None:
@@ -407,10 +594,34 @@ def validate_factors(
             n_groups=n_groups,
         )
         loaded_dictionary = load_data_dictionary(data_dictionary)
-        connection = duckdb.connect(str(db_path), read_only=True)
     except (OSError, ValueError, duckdb.Error) as exc:
         raise click.ClickException(str(exc)) from exc
 
+    context = _begin_audit(
+        command="validate-factors",
+        artifact_kind="factor_validation",
+        db_path=db_path,
+        run_id=run_id or generated_run_id("validate-factors"),
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=to,
+        source_run_id=source_run_id,
+        params={
+            "from": from_,
+            "to": to,
+            "factor": factor,
+            "horizon": horizon,
+            "n_groups": n_groups,
+            "validation_config": str(validation_config),
+            "data_dictionary": str(data_dictionary),
+            "include_hard_filters": include_hard_filters,
+            "verbose": verbose,
+        },
+        config_paths=[validation_config, data_dictionary],
+    )
+    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
     try:
         try:
             result = run_factor_validation(
@@ -425,14 +636,25 @@ def validate_factors(
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
+        context.add_duckdb_table_input(
+            "factor_values",
+            source_run_id=source_run_id,
+            predicate=f"source_run_id={source_run_id}; {from_}..{to}",
+        )
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
     finally:
-        connection.close()
+        if not isinstance(context, AuditContext):
+            connection.close()
 
     if result.coverage.empty:
-        raise click.ClickException(
+        exc = click.ClickException(
             "No valid factor input rows found for the requested source_run_id, "
             "date range, factor names, and as_of_date = trade_date filter."
         )
+        _fail_audit(context, exc)
+        raise exc
 
     horizons = ", ".join(str(value) for value in merged_config["horizons"])  # type: ignore[index]
     factors = ", ".join(result.coverage["factor_name"].drop_duplicates().tolist())
@@ -483,6 +705,7 @@ def validate_factors(
     _print_frame("group_return_summary", group_summary, verbose=verbose)
 
     _print_frame("decay_curve", result.decay_curve, verbose=verbose)
+    _succeed_audit(context)
 
 
 @app.command(name="event-study")
@@ -628,21 +851,48 @@ def scan(
     db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
     as_of: str = typer.Option(..., "--as-of"),
     source_run_id: str = typer.Option(..., "--source-run-id"),
+    index_code: str | None = typer.Option(None, "--index-code"),
     sort_factor: str = typer.Option(..., "--sort-factor"),
     factor: list[str] | None = typer.Option(None, "--factor"),
     top: int = typer.Option(20, "--top"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
-    output_dir: Path = typer.Option(Path("data/reports/generated/scan"), "--output-dir"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
     """Generate a minimal research candidate list from stored factor_values."""
     try:
         parsed_as_of = parse_as_of_date(as_of)
         loaded_dictionary = load_data_dictionary(data_dictionary)
-        connection = duckdb.connect(str(db_path), read_only=True)
     except (OSError, ValueError, duckdb.Error) as exc:
         raise click.ClickException(str(exc)) from exc
 
+    context = _begin_audit(
+        command="scan",
+        artifact_kind="scan",
+        db_path=db_path,
+        run_id=run_id or generated_run_id("scan"),
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=parsed_as_of.isoformat(),
+        source_run_id=source_run_id,
+        params={
+            "as_of": as_of,
+            "index_code": index_code,
+            "sort_factor": sort_factor,
+            "factor": factor,
+            "top": top,
+            "data_dictionary": str(data_dictionary),
+            "overwrite": overwrite,
+        },
+        config_paths=[data_dictionary],
+    )
+    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
     try:
         try:
             result = scan_candidates(
@@ -656,14 +906,20 @@ def scan(
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
+        context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
     finally:
-        connection.close()
+        if not isinstance(context, AuditContext):
+            connection.close()
 
     factor_names = _candidate_factor_names(result.candidates)
     metadata = {
         "generated_at": _generated_at(),
         "db_path": str(db_path),
         "source_run_id": source_run_id,
+        "index_code": index_code,
         "as_of_date": parsed_as_of.isoformat(),
         "sort_factor": sort_factor,
         "sort_factor_direction": _factor_direction(loaded_dictionary, sort_factor),
@@ -675,11 +931,12 @@ def scan(
     try:
         paths = write_candidate_report(
             result=result,
-            output_dir=output_dir,
+            output_dir=_resolve_output_dir(output_dir, context),
             metadata=metadata,
-            overwrite=overwrite,
+            overwrite=overwrite or overwrite_run,
         )
     except (OSError, ValueError) as exc:
+        _fail_audit(context, exc)
         raise click.ClickException(str(exc)) from exc
 
     for warning in result.warnings:
@@ -693,6 +950,7 @@ def scan(
     _print_frame("candidates", result.candidates, verbose=False, limit=top)
     for key, path in paths.items():
         typer.echo(f"{key}: {path}")
+    _succeed_audit(context, paths)
 
 
 @app.command(name="score")
@@ -709,11 +967,12 @@ def score(
     diagnostics_to: str | None = typer.Option(None, "--diagnostics-to"),
     horizon: str | None = typer.Option(None, "--horizon"),
     skip_diagnostics: bool = typer.Option(False, "--skip-diagnostics"),
-    output_dir: Path = typer.Option(
-        Path("data/reports/generated/phase3/scoring"),
-        "--output-dir",
-    ),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
     """Generate Phase 3 composite scoring reports from validated factor values."""
     if (diagnostics_from is None) ^ (diagnostics_to is None):
@@ -766,6 +1025,35 @@ def score(
     except (OSError, ValueError, duckdb.Error) as exc:
         raise click.ClickException(str(exc)) from exc
 
+    context = _begin_audit(
+        command="score",
+        artifact_kind="scoring",
+        db_path=db_path,
+        run_id=run_id or generated_run_id("score"),
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=parsed_as_of.isoformat(),
+        source_run_id=source_run_id,
+        params={
+            "as_of": as_of,
+            "index_code": index_code,
+            "validation_dir": str(validation_dir),
+            "scoring_config": str(scoring_config),
+            "data_dictionary": str(data_dictionary),
+            "top": top,
+            "diagnostics_from": diagnostics_from,
+            "diagnostics_to": diagnostics_to,
+            "horizon": horizon,
+            "skip_diagnostics": skip_diagnostics,
+            "overwrite": overwrite,
+        },
+        config_paths=[scoring_config, data_dictionary],
+        artifact_input_paths=_artifact_input_files(validation_dir),
+    )
+    context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
+
     gate_failures = gate_result.table[
         (gate_result.table["configured_enabled"].astype(bool))
         & (gate_result.table["validation_status"] != "PASS")
@@ -780,20 +1068,21 @@ def score(
         try:
             paths = write_validation_failure_artifacts(
                 validation_gate=gate_result.table,
-                output_dir=output_dir,
+                output_dir=_resolve_output_dir(output_dir, context),
                 metadata=metadata,
-                overwrite=overwrite,
+                overwrite=overwrite or overwrite_run,
             )
         except (OSError, ValueError) as exc:
+            _fail_audit(context, exc)
             raise click.ClickException(str(exc)) from exc
         for key, path in paths.items():
             typer.echo(f"{key}: {path}")
-        raise click.ClickException("Validation gate failed in strict mode.")
+        exc = click.ClickException("Validation gate failed in strict mode.")
+        context.add_artifacts(paths)
+        _fail_audit(context, exc)
+        raise exc
 
-    try:
-        connection = duckdb.connect(str(db_path), read_only=True)
-    except duckdb.Error as exc:
-        raise click.ClickException(str(exc)) from exc
+    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
 
     try:
         try:
@@ -839,16 +1128,20 @@ def score(
             metadata["warnings"] = list(dict.fromkeys([*gate_result.warnings, *run_warnings]))
             paths = write_scoring_report(
                 result=result,
-                output_dir=output_dir,
+                output_dir=_resolve_output_dir(output_dir, context),
                 metadata=metadata,
                 weight_sensitivity=weight_sensitivity,
                 yearly_stability=yearly_stability,
-                overwrite=overwrite,
+                overwrite=overwrite or overwrite_run,
             )
         except (OSError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
     finally:
-        connection.close()
+        if not isinstance(context, AuditContext):
+            connection.close()
 
     typer.echo("composite score is for research only and is not a trading instruction.")
     typer.echo("综合评分仅供研究复盘，不是交易指令。")
@@ -866,6 +1159,7 @@ def score(
     _print_frame("top_candidates", result.scored_candidates, verbose=False, limit=resolved_top)
     for key, path in paths.items():
         typer.echo(f"{key}: {path}")
+    _succeed_audit(context, paths)
 
 
 @app.command(name="backtest")
@@ -881,11 +1175,12 @@ def backtest(
     initial_cash: float | None = typer.Option(None, "--initial-cash"),
     backtest_config: Path = typer.Option(Path("configs/backtest.yaml"), "--backtest-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
-    output_dir: Path = typer.Option(
-        Path("data/reports/generated/phase1b/backtest"),
-        "--output-dir",
-    ),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
     """Run the Phase 1b Top N equal-weight portfolio backtest."""
     if strategy != "topn-equal":
@@ -904,12 +1199,37 @@ def backtest(
             raise click.ClickException("backtest config portfolio section must be a mapping.")
         resolved_top = int(portfolio_config["top_n"])
         resolved_initial_cash = float(portfolio_config["initial_cash"])
-        connection = duckdb.connect(str(db_path), read_only=True)
     except click.ClickException:
         raise
     except (OSError, ValueError, duckdb.Error) as exc:
         raise click.ClickException(str(exc)) from exc
 
+    context = _begin_audit(
+        command="backtest",
+        artifact_kind="backtest",
+        db_path=db_path,
+        run_id=run_id or generated_run_id("backtest"),
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=to,
+        source_run_id=source_run_id,
+        params={
+            "strategy": strategy,
+            "from": from_,
+            "to": to,
+            "sort_factor": sort_factor,
+            "index_code": index_code,
+            "top": top,
+            "initial_cash": initial_cash,
+            "backtest_config": str(backtest_config),
+            "data_dictionary": str(data_dictionary),
+            "overwrite": overwrite,
+        },
+        config_paths=[backtest_config, data_dictionary],
+    )
+    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
     try:
         try:
             result = run_topn_equal_weight_backtest(
@@ -926,8 +1246,16 @@ def backtest(
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
+        context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
+        context.add_duckdb_table_input("daily_prices", predicate=f"{from_}..{to}")
+        context.add_duckdb_table_input("universe_members", predicate=f"index_code={index_code}")
+        context.add_duckdb_table_input("valuation_daily", predicate=f"{from_}..{to}")
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
     finally:
-        connection.close()
+        if not isinstance(context, AuditContext):
+            connection.close()
 
     metadata = {
         "generated_at": _generated_at(),
@@ -945,11 +1273,12 @@ def backtest(
     try:
         paths = write_backtest_report(
             result=result,
-            output_dir=output_dir,
+            output_dir=_resolve_output_dir(output_dir, context),
             metadata=metadata,
-            overwrite=overwrite,
+            overwrite=overwrite or overwrite_run,
         )
     except (OSError, ValueError) as exc:
+        _fail_audit(context, exc)
         raise click.ClickException(str(exc)) from exc
 
     typer.echo("backtest report is for research only and is not a trading instruction.")
@@ -976,6 +1305,7 @@ def backtest(
         typer.echo(f"WARNING: {warning}")
     for key, path in paths.items():
         typer.echo(f"{key}: {path}")
+    _succeed_audit(context, paths)
 
 
 @app.command(name="report")
@@ -991,11 +1321,12 @@ def report(
     validation_config: Path = typer.Option(Path("configs/validation.yaml"), "--validation-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
     include_hard_filters: bool = typer.Option(False, "--include-hard-filters"),
-    output_dir: Path = typer.Option(
-        Path("data/reports/generated/factor-validation"),
-        "--output-dir",
-    ),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
     """Generate Phase 1a-6 reports."""
     if kind != "factor-validation":
@@ -1010,10 +1341,35 @@ def report(
             n_groups=n_groups,
         )
         loaded_dictionary = load_data_dictionary(data_dictionary)
-        connection = duckdb.connect(str(db_path), read_only=True)
     except (OSError, ValueError, duckdb.Error) as exc:
         raise click.ClickException(str(exc)) from exc
 
+    context = _begin_audit(
+        command="report",
+        artifact_kind="factor_validation",
+        db_path=db_path,
+        run_id=run_id or generated_run_id("report"),
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=to,
+        source_run_id=source_run_id,
+        params={
+            "kind": kind,
+            "from": from_,
+            "to": to,
+            "factor": factor,
+            "horizon": horizon,
+            "n_groups": n_groups,
+            "validation_config": str(validation_config),
+            "data_dictionary": str(data_dictionary),
+            "include_hard_filters": include_hard_filters,
+            "overwrite": overwrite,
+        },
+        config_paths=[validation_config, data_dictionary],
+    )
+    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
     try:
         try:
             result = run_factor_validation(
@@ -1028,14 +1384,25 @@ def report(
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
+        context.add_duckdb_table_input(
+            "factor_values",
+            source_run_id=source_run_id,
+            predicate=f"{from_}..{to}",
+        )
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
     finally:
-        connection.close()
+        if not isinstance(context, AuditContext):
+            connection.close()
 
     if result.coverage.empty:
-        raise click.ClickException(
+        exc = click.ClickException(
             "No valid factor input rows found for the requested source_run_id, "
             "date range, factor names, and as_of_date = trade_date filter."
         )
+        _fail_audit(context, exc)
+        raise exc
 
     factors = list(factor) if factor else sorted(result.coverage["factor_name"].unique().tolist())
     metadata = {
@@ -1054,11 +1421,12 @@ def report(
     try:
         paths = write_factor_validation_report(
             result=result,
-            output_dir=output_dir,
+            output_dir=_resolve_output_dir(output_dir, context),
             metadata=metadata,
-            overwrite=overwrite,
+            overwrite=overwrite or overwrite_run,
         )
     except (OSError, ValueError) as exc:
+        _fail_audit(context, exc)
         raise click.ClickException(str(exc)) from exc
 
     for warning in result.warnings:
@@ -1073,6 +1441,7 @@ def report(
     )
     for key, path in paths.items():
         typer.echo(f"{key}: {path}")
+    _succeed_audit(context, paths)
 
 
 @app.command(name="stock-report")
@@ -1137,8 +1506,12 @@ def calculate_factors(
     factor: list[str] | None = typer.Option(None, "--factor"),
     factor_config: Path = typer.Option(Path("configs/factors.yaml"), "--factor-config"),
     source_run_id: str = typer.Option("phase1a4", "--source-run-id"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
     include_delisted: bool = typer.Option(False, "--include-delisted"),
-    replace: bool = typer.Option(True, "--replace/--append"),
+    replace: bool = typer.Option(False, "--replace/--append"),
 ) -> None:
     """Calculate and store Phase 1a-4 factors. Range output prints per-date universe sizes."""
     has_as_of = as_of is not None
@@ -1153,14 +1526,41 @@ def calculate_factors(
         )
     if (has_from and not has_to) or (has_to and not has_from):
         raise click.ClickException("Range mode requires both --from and --to.")
+    if replace and not overwrite_run:
+        raise click.ClickException("--replace is deprecated for audited runs; use --overwrite-run.")
+
+    resolved_run_id = run_id or source_run_id
+    if run_id is not None and run_id != source_run_id:
+        raise click.ClickException("--run-id must equal --source-run-id for calculate-factors.")
 
     try:
         parsed_config = load_factor_config(factor_config)
     except (OSError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
-    init_db(db_path)
-    connection = duckdb.connect(str(db_path))
+    context = _begin_audit(
+        command="calculate-factors",
+        artifact_kind="factor_values",
+        db_path=db_path,
+        run_id=resolved_run_id,
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=None,
+        as_of_date=as_of or to,
+        source_run_id=source_run_id,
+        params={
+            "as_of": as_of,
+            "from": from_,
+            "to": to,
+            "index_code": index_code,
+            "factor": factor,
+            "factor_config": str(factor_config),
+            "include_delisted": include_delisted,
+        },
+        config_paths=[factor_config],
+    )
+    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path))
     try:
         if has_as_of:
             assert as_of is not None
@@ -1177,11 +1577,22 @@ def calculate_factors(
             except (TypeError, ValueError) as exc:
                 raise click.ClickException(str(exc)) from exc
 
-            written_rows = write_factor_values(
-                connection,
-                factors,
-                source_run_id=source_run_id,
-                replace=replace,
+            try:
+                if overwrite_run:
+                    deleted_rows = delete_factor_values_for_source_run(connection, source_run_id)
+                    typer.echo(f"overwrite_deleted_factor_rows: {deleted_rows}")
+                written_rows = write_factor_values(
+                    connection,
+                    factors,
+                    source_run_id=source_run_id,
+                    replace=False,
+                )
+            except (ValueError, duckdb.Error) as exc:
+                raise click.ClickException(str(exc)) from exc
+            _add_factor_calculation_inputs(
+                context,
+                index_code=index_code,
+                predicate=f"as_of={parsed_as_of.isoformat()}",
             )
             typer.echo(f"Database path: {db_path}")
             typer.echo(f"Date mode: as-of {parsed_as_of.isoformat()}")
@@ -1189,6 +1600,7 @@ def calculate_factors(
             typer.echo(f"universe_size: {factors.attrs.get('universe_size', 0)}")
             typer.echo(f"written_rows: {written_rows}")
             _print_factor_counts(_factor_row_counts(factors))
+            _succeed_audit(context)
             return
 
         assert from_ is not None and to is not None
@@ -1226,11 +1638,22 @@ def calculate_factors(
                 columns=["stock_code", "trade_date", "factor_name", "factor_value", "as_of_date"]
             )
 
-        written_rows = write_factor_values(
-            connection,
-            factors,
-            source_run_id=source_run_id,
-            replace=replace,
+        try:
+            if overwrite_run:
+                deleted_rows = delete_factor_values_for_source_run(connection, source_run_id)
+                typer.echo(f"overwrite_deleted_factor_rows: {deleted_rows}")
+            written_rows = write_factor_values(
+                connection,
+                factors,
+                source_run_id=source_run_id,
+                replace=False,
+            )
+        except (ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+        _add_factor_calculation_inputs(
+            context,
+            index_code=index_code,
+            predicate=f"{start.isoformat()}..{end.isoformat()}",
         )
 
         typer.echo(f"Database path: {db_path}")
@@ -1244,8 +1667,12 @@ def calculate_factors(
             typer.echo("  (no open trading dates)")
         typer.echo(f"written_rows: {written_rows}")
         _print_factor_counts(_factor_row_counts(factors))
+        _succeed_audit(context)
+    except click.ClickException as exc:
+        _fail_audit(context, exc)
+        raise
     finally:
-        connection.close()
+        context.close()
 
 
 @app.command(name="as-of")

@@ -60,7 +60,13 @@ def create_app(
                 "artifacts": {
                     "roots": [config.repo_relative(root) for root in config.artifact_roots],
                     "known_kinds": list(config.known_artifact_kinds),
+                    "audit_schema_available": registry.audit_schema_available(),
+                    "artifact_index_available": registry.artifact_index_available(),
                 },
+                "audit_schema_available": registry.audit_schema_available(),
+                "artifact_index_available": registry.artifact_index_available(),
+                "latest_run_id": registry.latest_run_id(),
+                "latest_formal_run_id": registry.latest_run_id(formal=True),
                 "scheduler": {
                     "enabled": config.scheduler_enabled,
                     "timezone": config.scheduler_timezone,
@@ -85,6 +91,31 @@ def create_app(
         if artifact is None:
             return _error(404, "artifact_not_found", "Artifact not found.")
         return _json({"artifact": artifact.to_dict()})
+
+    @app.get("/api/v1/runs")
+    def runs(limit: int = Query(50, ge=1)) -> JSONResponse:
+        return _json({"runs": registry.list_runs(limit=min(limit, 100))})
+
+    @app.get("/api/v1/runs/{run_id}")
+    def run_detail(run_id: str) -> JSONResponse:
+        run = registry.get_run(run_id)
+        if run is None:
+            return _error(404, "run_not_found", "Run not found.")
+        return _json({"run": run})
+
+    @app.get("/api/v1/runs/{run_id}/artifacts")
+    def run_artifacts(run_id: str) -> JSONResponse:
+        run = registry.get_run(run_id)
+        if run is None:
+            return _error(404, "run_not_found", "Run not found.")
+        return _json({"run_id": run_id, "artifacts": registry.artifacts_for_run(run_id)})
+
+    @app.get("/api/v1/runs/{run_id}/manifest")
+    def run_manifest(run_id: str) -> Response:
+        manifest = registry.manifest_for_run(run_id)
+        if manifest is None:
+            return _error(404, "manifest_not_found", "Run manifest not found.")
+        return Response(content=manifest, media_type="application/json; charset=utf-8")
 
     @app.get("/api/v1/scans/latest")
     def latest_scan() -> JSONResponse:

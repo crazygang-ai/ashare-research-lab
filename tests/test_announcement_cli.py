@@ -74,6 +74,8 @@ def test_announcement_ingest_and_parse_cli_roundtrip(tmp_path: Path) -> None:
             "--model",
             "fixture-llm",
             "--overwrite",
+            "--output-dir",
+            str(tmp_path / "parse-report"),
         ],
         check=True,
         capture_output=True,
@@ -90,12 +92,33 @@ def test_announcement_ingest_and_parse_cli_roundtrip(tmp_path: Path) -> None:
               AND status = 'success'
             """
         ).fetchone()[0]
+        audit_run = connection.execute(
+            """
+            SELECT status, finished_at
+            FROM research_runs
+            WHERE run_id = 'phase2-fixture-parse'
+            """
+        ).fetchone()
+        artifact_roles = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT role
+                FROM research_artifacts
+                WHERE run_id = 'phase2-fixture-parse'
+                """
+            ).fetchall()
+        }
     finally:
         connection.close()
 
     assert "date_filter: publish_time 2026-01-05 to 2026-03-31" in ingest.stdout
     assert "date_filter: effective_date 2026-01-06 to 2026-03-31" in parse.stdout
+    assert "run_id: phase2-fixture-parse" in parse.stdout
     assert parse_rows == 3
+    assert audit_run[0] == "succeeded"
+    assert audit_run[1] is not None
+    assert {"manifest", "metadata_json"}.issubset(artifact_roles)
 
 
 def test_cli_help_lists_phase2_commands() -> None:

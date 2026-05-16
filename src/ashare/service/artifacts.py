@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import duckdb
 
 from ashare.service.config import ServiceConfig
 from ashare.service.schemas import jsonable
@@ -56,15 +57,21 @@ class ArtifactRecord:
     warnings: list[str]
     updated_at: str
     sort_timestamp: float
+    run_id: str | None = None
+    run_metadata: dict[str, Any] | None = None
+    artifact_rows: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "artifact_id": self.artifact_id,
             "kind": self.kind,
+            "run_id": self.run_id,
             "title": self.title,
             "output_dir": self.output_dir_display,
             "files": self.file_display,
             "metadata": jsonable(self.metadata),
+            "run": jsonable(self.run_metadata or {}),
+            "artifact_rows": jsonable(self.artifact_rows or []),
             "warnings": list(self.warnings),
             "updated_at": self.updated_at,
         }
@@ -77,9 +84,10 @@ class ArtifactRegistry:
         self.config = config
 
     def list_artifacts(self, kind: str | None = None, limit: int | None = None) -> list[ArtifactRecord]:
-        records: list[ArtifactRecord] = []
-        for root in self.config.artifact_roots:
-            records.extend(self._scan_root(root))
+        records = self._indexed_records()
+        if not records:
+            for root in self.config.artifact_roots:
+                records.extend(self._scan_root(root))
         if kind is not None:
             records = [record for record in records if record.kind == kind]
         records = sorted(
@@ -94,7 +102,12 @@ class ArtifactRegistry:
         if not _looks_like_artifact_id(artifact_id):
             return None
         for record in self.list_artifacts(limit=None):
-            if record.artifact_id == artifact_id:
+            row_ids = {
+                str(row.get("artifact_id"))
+                for row in (record.artifact_rows or [])
+                if row.get("artifact_id")
+            }
+            if record.artifact_id == artifact_id or artifact_id in row_ids:
                 return record
         return None
 
@@ -110,7 +123,8 @@ class ArtifactRegistry:
         path = record.files.get(filename)
         if path is None:
             return None
-        self._assert_inside_configured_root(path)
+        if not record.artifact_rows:
+            self._assert_inside_configured_root(path)
         return path.read_text(encoding="utf-8")
 
     def read_csv(self, artifact_id: str, filename: str) -> pd.DataFrame:
@@ -122,7 +136,8 @@ class ArtifactRegistry:
             raise FileNotFoundError(
                 f"Artifact {artifact_id} does not contain required file {filename}."
             )
-        self._assert_inside_configured_root(path)
+        if not record.artifact_rows:
+            self._assert_inside_configured_root(path)
         return pd.read_csv(path)
 
     def _scan_root(self, root: Path) -> list[ArtifactRecord]:
@@ -139,10 +154,143 @@ class ArtifactRegistry:
             directory = Path(dirpath).resolve()
             present = set(filenames)
             for kind in self.config.known_artifact_kinds:
+                if kind not in ARTIFACT_REQUIRED_FILES:
+                    continue
                 required = set(ARTIFACT_REQUIRED_FILES[kind])
                 if not required.intersection(present):
                     continue
                 records.append(self._build_record(kind, directory, resolved_root, present))
+        return records
+
+    def audit_schema_available(self) -> bool:
+        return _audit_tables_available(self.config.database_path)
+
+    def artifact_index_available(self) -> bool:
+        return bool(self._indexed_records(limit=1))
+
+    def latest_run_id(self, *, formal: bool = False) -> str | None:
+        if not self.audit_schema_available():
+            return None
+        connection = duckdb.connect(str(self.config.database_path), read_only=True)
+        try:
+            if formal:
+                row = connection.execute(
+                    """
+                    SELECT run_id
+                    FROM research_runs
+                    WHERE json_extract_string(params, '$.run_mode') = 'formal'
+                    ORDER BY COALESCE(finished_at, started_at) DESC, run_id
+                    LIMIT 1
+                    """
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT run_id
+                    FROM research_runs
+                    ORDER BY COALESCE(finished_at, started_at) DESC, run_id
+                    LIMIT 1
+                    """
+                ).fetchone()
+        finally:
+            connection.close()
+        return str(row[0]) if row else None
+
+    def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        if not self.audit_schema_available():
+            return []
+        connection = duckdb.connect(str(self.config.database_path), read_only=True)
+        try:
+            rows = connection.execute(
+                """
+                SELECT run_id, CAST(as_of_date AS VARCHAR), status, params, config_hash,
+                       data_snapshot_id, git_sha, worktree_clean,
+                       CAST(started_at AS VARCHAR), CAST(finished_at AS VARCHAR), error
+                FROM research_runs
+                ORDER BY COALESCE(finished_at, started_at) DESC, run_id
+                LIMIT ?
+                """,
+                [limit],
+            ).fetchall()
+        finally:
+            connection.close()
+        return [_run_row_to_dict(row) for row in rows]
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        if not self.audit_schema_available():
+            return None
+        connection = duckdb.connect(str(self.config.database_path), read_only=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT run_id, CAST(as_of_date AS VARCHAR), status, params, config_hash,
+                       data_snapshot_id, git_sha, worktree_clean,
+                       CAST(started_at AS VARCHAR), CAST(finished_at AS VARCHAR), error
+                FROM research_runs
+                WHERE run_id = ?
+                """,
+                [run_id],
+            ).fetchone()
+        finally:
+            connection.close()
+        return _run_row_to_dict(row) if row else None
+
+    def artifacts_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        if not self.audit_schema_available():
+            return []
+        connection = duckdb.connect(str(self.config.database_path), read_only=True)
+        try:
+            rows = connection.execute(
+                """
+                SELECT artifact_id, run_id, artifact_kind, role, path, media_type, sha256,
+                       row_count, size_bytes, CAST(created_at AS VARCHAR), metadata_json
+                FROM research_artifacts
+                WHERE run_id = ?
+                ORDER BY artifact_kind, role, path
+                """,
+                [run_id],
+            ).fetchall()
+        finally:
+            connection.close()
+        return [_artifact_row_to_dict(row) for row in rows]
+
+    def manifest_for_run(self, run_id: str) -> str | None:
+        manifest_rows = [
+            row for row in self.artifacts_for_run(run_id) if row.get("role") == "manifest"
+        ]
+        if not manifest_rows:
+            return None
+        path = self._resolve_artifact_path(str(manifest_rows[0]["path"]))
+        if not path.exists() or not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+
+    def _indexed_records(self, limit: int | None = None) -> list[ArtifactRecord]:
+        if not self.audit_schema_available():
+            return []
+        connection = duckdb.connect(str(self.config.database_path), read_only=True)
+        try:
+            rows = connection.execute(
+                """
+                SELECT
+                    a.artifact_id, a.run_id, a.artifact_kind, a.role, a.path,
+                    a.media_type, a.sha256, a.row_count, a.size_bytes,
+                    CAST(a.created_at AS VARCHAR), a.metadata_json,
+                    r.status, r.params, r.git_sha, r.worktree_clean,
+                    CAST(r.started_at AS VARCHAR), CAST(r.finished_at AS VARCHAR),
+                    r.config_hash, r.data_snapshot_id, r.error
+                FROM research_artifacts a
+                LEFT JOIN research_runs r ON r.run_id = a.run_id
+                ORDER BY a.created_at DESC, a.run_id, a.role
+                """
+            ).fetchall()
+        except duckdb.Error:
+            return []
+        finally:
+            connection.close()
+        records = _group_index_rows(rows, self.config)
+        if limit is not None:
+            return records[:limit]
         return records
 
     def _build_record(
@@ -191,6 +339,18 @@ class ArtifactRegistry:
                 return
         raise ValueError(f"Refusing to read file outside configured artifact roots: {path}")
 
+    def _assert_inside_configured_root_or_repo(self, path: Path) -> None:
+        resolved = path.resolve()
+        if _is_inside(resolved, self.config.repo_root):
+            return
+        self._assert_inside_configured_root(path)
+
+    def _resolve_artifact_path(self, value: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path.resolve()
+        return self.config.resolve_path(path)
+
 
 def _artifact_id(kind: str, output_dir_display: str) -> str:
     source = f"{kind}|{output_dir_display}"
@@ -198,7 +358,7 @@ def _artifact_id(kind: str, output_dir_display: str) -> str:
 
 
 def _looks_like_artifact_id(value: str) -> bool:
-    return len(value) == 12 and all(char in "0123456789abcdef" for char in value)
+    return len(value) in {12, 40} and all(char in "0123456789abcdef" for char in value)
 
 
 def _is_inside(path: Path, root: Path) -> bool:
@@ -256,3 +416,144 @@ def _artifact_title(kind: str, output_dir_display: str, metadata: dict[str, Any]
         if value:
             return f"{kind} {value}"
     return f"{kind} {Path(output_dir_display).name}"
+
+
+def _audit_tables_available(db_path: Path) -> bool:
+    if not db_path.exists():
+        return False
+    try:
+        connection = duckdb.connect(str(db_path), read_only=True)
+    except duckdb.Error:
+        return False
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+        }
+    except duckdb.Error:
+        return False
+    finally:
+        connection.close()
+    return {"research_runs", "research_artifacts", "research_run_inputs"}.issubset(tables)
+
+
+def _group_index_rows(rows: list[tuple[Any, ...]], config: ServiceConfig) -> list[ArtifactRecord]:
+    groups: dict[tuple[str, str, str], list[tuple[Any, ...]]] = {}
+    for row in rows:
+        path = str(row[4])
+        output_dir = str(Path(path).parent)
+        groups.setdefault((str(row[1]), str(row[2]), output_dir), []).append(row)
+
+    records: list[ArtifactRecord] = []
+    for (run_id, kind, output_dir_display), group_rows in groups.items():
+        artifact_rows = [_artifact_row_to_dict(row[:11]) for row in group_rows]
+        files: dict[str, Path] = {}
+        file_display: dict[str, str] = {}
+        warnings: list[str] = []
+        for artifact in artifact_rows:
+            path_value = str(artifact["path"])
+            path = Path(path_value)
+            resolved = path.resolve() if path.is_absolute() else config.resolve_path(path)
+            filename = resolved.name
+            files[filename] = resolved
+            file_display[filename] = path_value
+            if not resolved.exists():
+                warnings.append(f"Indexed artifact file is missing: {path_value}")
+
+        first = group_rows[0]
+        params = _json_value(first[12])
+        run_metadata = {
+            "run_id": run_id,
+            "status": first[11],
+            "params": params,
+            "git_sha": first[13],
+            "worktree_clean": first[14],
+            "started_at": first[15],
+            "finished_at": first[16],
+            "config_hash": first[17],
+            "data_snapshot_id": first[18],
+            "error": first[19],
+        }
+        metadata = {
+            "run_id": run_id,
+            "run_mode": params.get("run_mode") if isinstance(params, dict) else None,
+            "source_run_id": params.get("source_run_id") if isinstance(params, dict) else None,
+            "status": first[11],
+        }
+        updated_at = str(first[16] or first[9] or first[15] or "")
+        sort_timestamp = _sort_timestamp(updated_at)
+        group_id = _artifact_id(kind, f"{run_id}|{output_dir_display}")
+        records.append(
+            ArtifactRecord(
+                artifact_id=group_id,
+                kind=kind,
+                title=_artifact_title(kind, output_dir_display, metadata),
+                output_dir=config.resolve_path(output_dir_display),
+                output_dir_display=output_dir_display,
+                files=files,
+                file_display=file_display,
+                metadata=metadata,
+                warnings=warnings,
+                updated_at=updated_at,
+                sort_timestamp=sort_timestamp,
+                run_id=run_id,
+                run_metadata=run_metadata,
+                artifact_rows=artifact_rows,
+            )
+        )
+    return sorted(
+        records,
+        key=lambda record: (-record.sort_timestamp, record.kind, record.output_dir_display),
+    )
+
+
+def _artifact_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "artifact_id": row[0],
+        "run_id": row[1],
+        "artifact_kind": row[2],
+        "role": row[3],
+        "path": row[4],
+        "media_type": row[5],
+        "sha256": row[6],
+        "row_count": row[7],
+        "size_bytes": row[8],
+        "created_at": row[9],
+        "metadata": _json_value(row[10]),
+    }
+
+
+def _run_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "run_id": row[0],
+        "as_of_date": row[1],
+        "status": row[2],
+        "params": _json_value(row[3]),
+        "config_hash": row[4],
+        "data_snapshot_id": row[5],
+        "git_sha": row[6],
+        "worktree_clean": row[7],
+        "started_at": row[8],
+        "finished_at": row[9],
+        "error": row[10],
+    }
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value if value is not None else {}
+
+
+def _sort_timestamp(value: str) -> float:
+    parsed = _parse_datetime(value) if value else None
+    return parsed.timestamp() if parsed is not None else 0.0

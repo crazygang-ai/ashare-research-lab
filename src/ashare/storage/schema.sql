@@ -200,6 +200,32 @@ CREATE TABLE IF NOT EXISTS research_runs (
     error VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS research_artifacts (
+    artifact_id VARCHAR,
+    run_id VARCHAR,
+    artifact_kind VARCHAR,
+    role VARCHAR,
+    path VARCHAR,
+    media_type VARCHAR,
+    sha256 VARCHAR,
+    row_count BIGINT,
+    size_bytes BIGINT,
+    created_at TIMESTAMP,
+    metadata_json JSON
+);
+
+CREATE TABLE IF NOT EXISTS research_run_inputs (
+    input_id VARCHAR,
+    run_id VARCHAR,
+    input_kind VARCHAR,
+    input_ref VARCHAR,
+    source_run_id VARCHAR,
+    sha256 VARCHAR,
+    row_count BIGINT,
+    metadata_json JSON,
+    created_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER,
     applied_at TIMESTAMP,

@@ -1,0 +1,24 @@
+version: phase5.v1
+
+run_tracking:
+  enabled: true
+  default_run_mode: exploratory
+  formal_requires_clean_worktree: true
+  fail_on_duplicate_run_id: true
+  manifest_filename: run_manifest.json
+
+artifacts:
+  default_root: data/reports/generated
+  write_manifest: true
+  index_files: true
+  hash_files: true
+  csv_row_count: true
+
+data_fingerprint:
+  full_file_hash: true
+  duckdb_table_mode: metadata
+  max_dirty_files: 50
+
+factor_values:
+  duplicate_policy: fail
+  overwrite_requires_flag: true

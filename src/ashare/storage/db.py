@@ -5,8 +5,8 @@ from pathlib import Path
 import duckdb
 
 
-CURRENT_SCHEMA_VERSION = 2
-CURRENT_SCHEMA_DESCRIPTION = "phase 2 announcement llm parsing"
+CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_DESCRIPTION = "phase 5 run audit and artifact index"
 
 REQUIRED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "securities": (
@@ -90,6 +90,55 @@ def ensure_schema_columns(connection: duckdb.DuckDBPyConnection) -> None:
             version INTEGER,
             applied_at TIMESTAMP,
             description VARCHAR
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_runs (
+            run_id VARCHAR,
+            as_of_date DATE,
+            status VARCHAR,
+            params JSON,
+            config_hash VARCHAR,
+            data_snapshot_id VARCHAR,
+            git_sha VARCHAR,
+            worktree_clean BOOLEAN,
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            error VARCHAR
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_artifacts (
+            artifact_id VARCHAR,
+            run_id VARCHAR,
+            artifact_kind VARCHAR,
+            role VARCHAR,
+            path VARCHAR,
+            media_type VARCHAR,
+            sha256 VARCHAR,
+            row_count BIGINT,
+            size_bytes BIGINT,
+            created_at TIMESTAMP,
+            metadata_json JSON
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_run_inputs (
+            input_id VARCHAR,
+            run_id VARCHAR,
+            input_kind VARCHAR,
+            input_ref VARCHAR,
+            source_run_id VARCHAR,
+            sha256 VARCHAR,
+            row_count BIGINT,
+            metadata_json JSON,
+            created_at TIMESTAMP
         )
         """
     )

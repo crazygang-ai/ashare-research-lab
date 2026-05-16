@@ -65,9 +65,28 @@ def test_cli_calculate_factors_single_date_writes_factor_values(
     connection = duckdb.connect(str(fixture_db_path), read_only=True)
     try:
         research_runs = connection.execute("SELECT COUNT(*) FROM research_runs").fetchone()[0]
+        run = connection.execute(
+            """
+            SELECT run_id, status, finished_at, error
+            FROM research_runs
+            WHERE run_id = 'cli-single'
+            """
+        ).fetchone()
+        manifest_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM research_artifacts
+            WHERE run_id = 'cli-single' AND role = 'manifest'
+            """
+        ).fetchone()[0]
     finally:
         connection.close()
-    assert research_runs == 0
+    assert research_runs == 1
+    assert run[0] == "cli-single"
+    assert run[1] == "succeeded"
+    assert run[2] is not None
+    assert run[3] is None
+    assert manifest_count == 1
 
 
 def test_cli_calculate_factors_range_mode_filters_open_dates(

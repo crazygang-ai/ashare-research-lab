@@ -129,7 +129,10 @@ def test_backtest_cli_runs_writes_reports_and_does_not_write_duckdb(tmp_path: Pa
 
     assert "backtest report is for research only" in result.stdout
     assert "回测报告仅供研究复盘" in result.stdout
-    assert set(path.name for path in output_dir.iterdir()) == set(BACKTEST_REPORT_FILES.values())
+    assert set(path.name for path in output_dir.iterdir()) == {
+        *set(BACKTEST_REPORT_FILES.values()),
+        "run_manifest.json",
+    }
     metrics = pd.read_csv(output_dir / "metrics.csv")
     trades = pd.read_csv(output_dir / "trade_ledger.csv")
     holdings = pd.read_csv(output_dir / "holdings.csv")
@@ -140,7 +143,9 @@ def test_backtest_cli_runs_writes_reports_and_does_not_write_duckdb(tmp_path: Pa
     assert "T+1" in report_text
     assert "开盘" in report_text
     assert "不包含风格归因" in report_text
-    assert _table_counts(db_path, ["factor_values", "research_runs"]) == before
+    after = _table_counts(db_path, ["factor_values", "research_runs"])
+    assert after["factor_values"] == before["factor_values"]
+    assert after["research_runs"] == before["research_runs"] + 1
 
 
 def test_backtest_cli_rejects_unsupported_strategy() -> None:

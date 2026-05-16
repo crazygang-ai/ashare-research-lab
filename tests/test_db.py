@@ -17,6 +17,8 @@ REQUIRED_TABLES = {
     "risk_events",
     "factor_values",
     "research_runs",
+    "research_artifacts",
+    "research_run_inputs",
     "schema_version",
     "announcement_parse_runs",
     "announcement_llm_results",
@@ -67,7 +69,7 @@ def test_init_db_creates_duckdb_file_and_required_tables(tmp_path: Path) -> None
 
     assert db_path.is_file()
     assert REQUIRED_TABLES.issubset(_tables(db_path))
-    assert _schema_version_rows(db_path) == [(2, "phase 2 announcement llm parsing")]
+    assert _schema_version_rows(db_path) == [(3, "phase 5 run audit and artifact index")]
 
 
 def test_schema_sql_executes_directly_in_duckdb() -> None:
@@ -110,7 +112,7 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     init_db(db_path)
 
     assert REQUIRED_TABLES.issubset(_tables(db_path))
-    assert _schema_version_rows(db_path) == [(2, "phase 2 announcement llm parsing")]
+    assert _schema_version_rows(db_path) == [(3, "phase 5 run audit and artifact index")]
 
 
 def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(

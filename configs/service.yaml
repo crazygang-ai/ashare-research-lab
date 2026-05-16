@@ -13,10 +13,14 @@ artifacts:
   roots:
     - data/reports/generated
   known_kinds:
+    - factor_values
     - scan
     - scoring
     - backtest
     - factor_validation
+    - announcement_parse
+    - workflow
+    - manifest
 
 security:
   allow_http_workflow_run: false

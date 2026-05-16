@@ -12,7 +12,16 @@ import yaml
 
 EXPECTED_VERSION = "phase4.v1"
 DEFAULT_CONFIG_PATH = Path("configs/service.yaml")
-KNOWN_ARTIFACT_KINDS = ("scan", "scoring", "backtest", "factor_validation")
+KNOWN_ARTIFACT_KINDS = (
+    "factor_values",
+    "factor_validation",
+    "scan",
+    "scoring",
+    "backtest",
+    "announcement_parse",
+    "workflow",
+    "manifest",
+)
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "version": EXPECTED_VERSION,

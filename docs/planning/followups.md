@@ -2,6 +2,12 @@
 
 本文件登记前置 phase 已识别但当前系列 phase 暂不解决的工程债。D 系列编号来自 phase 1a-4.5 review 中的工程债扫描，保留编号是为了便于后续审计回溯。
 
+## Phase 5 更新
+
+- 已解决: D32、D38、D43、D44 的 MVP 审计缺口。`calculate-factors`、`report`、`scan`、`score`、`backtest`、`validate-factors` 和 `parse-announcements` 已接入 `research_runs`、`research_artifacts`、`research_run_inputs` 与 `run_manifest.json`；服务层优先读取 artifact index，并保留文件扫描 fallback。
+- 部分解决: D2 已在应用写入路径实现默认 fail-fast 和显式 `--overwrite-run` 治理，但 DuckDB schema 仍未增加物理唯一键；D16 已增加 `source_run_id` 级输入指纹和表 metadata fingerprint，但仍未保存完整 universe 快照；D18 已持久化验证报告 run 与文件索引，但未新增因子验证结果明细表。
+- 仍保留: D1、D19、D22、D24、D33、D39、D45-D55 等超出 Phase 5 范围的生产化、事件研究、真实数据源、timestamp 级 PIT、完整日报和权限部署能力。
+
 ## 高优先
 
 ### D1. effective_date 不区分盘前 / 盘中 / 盘后
@@ -13,10 +19,10 @@
 
 ### D2. factor_values 无唯一键
 
-- 现状: `src/ashare/storage/schema.sql` 中 `factor_values` 没有 `(stock_code, trade_date, factor_name, as_of_date, source_run_id)` 或等价 PRIMARY KEY。
+- 现状: `src/ashare/storage/schema.sql` 中 `factor_values` 仍没有 `(stock_code, trade_date, factor_name, as_of_date, source_run_id)` 或等价 PRIMARY KEY；Phase 5 已在 `src/ashare/factors/store.py` 的写入路径实现默认重复键 fail-fast，并要求 CLI 通过显式 `--overwrite-run` 才能替换同一 `source_run_id`。
 - 触发: 当重复运行同一批因子并写入同一数据库时，重复行会污染单因子验证、候选清单排序、回测输入和审计追踪。
-- 决策: Phase 1a-5 已在 `src/ashare/validation/runner.py` 对重复验证输入 fail-fast；Phase 1a-6 已在 `src/ashare/scan/candidates.py` 对候选扫描输入 fail-fast。待写入策略稳定后仍应增加唯一键或 upsert 语义。
-- 关联: Phase 1a-4 因子写入路径；Phase 1a-5 单因子验证输入检查；Phase 1a-6 候选扫描输入检查。
+- 决策: Phase 5 先采用应用层治理，错误信息最多打印 5 个重复键样例；后续如果 DuckDB 迁移策略稳定，再补物理唯一键或 upsert 语义。
+- 关联: Phase 1a-4 因子写入路径；Phase 1a-5 单因子验证输入检查；Phase 1a-6 候选扫描输入检查；Phase 5 run audit。
 
 ### D3. fundamental 同期基准与 trading_calendar 起点的张力
 
@@ -34,9 +40,9 @@
 
 ### D5. schema_version 已开始演进但仍不是完整 migration 机制
 
-- 现状: Phase 2 已将 `CURRENT_SCHEMA_VERSION` 推进到 2，并通过 `CREATE TABLE IF NOT EXISTS` 与 `ensure_schema_columns` 兼容旧库；但仍没有真实迁移序列、逐步升级脚本、版本间校验、回滚策略或回填审计流程。
+- 现状: Phase 5 已将 `CURRENT_SCHEMA_VERSION` 推进到 3，并通过 `CREATE TABLE IF NOT EXISTS` 与 `ensure_schema_columns` 为旧库补建 `research_artifacts`、`research_run_inputs` 等审计表；但仍没有真实迁移序列、逐步升级脚本、版本间校验、回滚策略或回填审计流程。
 - 触发: 一旦继续变更表结构、补唯一键、拆分 JSON 字段或回填历史公告 / 解析数据，缺少明确 migration 记录会使本地数据库状态不可审计。
-- 决策: 短期保留 Phase 2 的最小兼容补列方式；待 schema 继续演进前建立显式 migration 序列和 schema 变更校验流程。
+- 决策: 短期保留最小兼容补表 / 补列方式；待 schema 继续演进前建立显式 migration 序列和 schema 变更校验流程。
 - 关联: `src/ashare/storage/schema.sql`；`src/ashare/storage/db.py`；Phase 2 公告与 LLM 解析表。
 
 ### D6. ingest_local 是清表重写，不能用于真实数据
@@ -48,9 +54,9 @@
 
 ### D16. factor_values 缺少显式验证 universe 快照
 
-- 现状: `factor_values` 只保存已写出的因子值，没有保存每个 `source_run_id` / `trade_date` 的完整 universe；Phase 1a-5 在 `src/ashare/validation/runner.py` 中用 hard filter 行的 `stock_code` 并集推断覆盖率分母，缺失时 fallback 到同日可见因子行。
+- 现状: `factor_values` 只保存已写出的因子值，没有保存每个 `source_run_id` / `trade_date` 的完整 universe；Phase 5 已在 `research_run_inputs` 中记录 `factor_values` 的 `source_run_id`、row count、日期范围和 metadata fingerprint，但这不是完整 universe 快照。
 - 触发: 当 hard filter 未完整写入、局部因子重算、跨 run 比较或正式报告要求精确覆盖率时，推断分母可能高估覆盖率或掩盖 universe 变化。
-- 决策: 后续正式 run / snapshot 管理落地时，引入显式 universe 快照或验证输入快照；短期保留 Phase 1a-5 的 union + fallback，并在 CLI warning 中披露。
+- 决策: Phase 5 的输入指纹只能回答“本次 run 消费了哪个来源批次及其 metadata”；后续仍应引入显式 universe 快照或验证输入快照。
 - 关联: Phase 1a-5 覆盖率与缺失率口径；Plan 第 6 节 `factor_values`。
 
 ### D17. 单因子 forward_return 是统计标签，不是可执行收益
@@ -92,9 +98,9 @@
 
 ### D18. 单因子验证结果未持久化
 
-- 现状: Phase 1a-5 的 `validate_factors` 返回 DataFrame；Phase 1a-6 已通过 `src/ashare/reports/factor_report.py` 生成 Markdown / CSV 因子验证报告，但仍不写 DuckDB 验证结果表，也不把报告元数据写入 `research_runs`。
+- 现状: Phase 5 已把 `validate-factors` 和 `report --kind factor-validation` 的 run metadata、输入指纹、报告文件和 manifest 写入 `research_runs` / `research_artifacts`；但仍不新增 DuckDB 因子验证明细结果表。
 - 触发: 当需要跨 `source_run_id` 查询历史验证结论、在数据库中审计报告生成参数，或把验证摘要稳定接入正式 run / 服务化接口时，仅靠文件报告仍不足以支撑机器查询。
-- 决策: Phase 1a-6 先保留报告文件输出和只读验证流程；后续正式 run 管理落地时，再设计验证结果持久化、报告索引和 `research_runs` 关联。
+- 决策: Phase 5 先完成报告级索引和审计；后续如需数据库内直接查询 Rank IC / coverage 历史，再设计验证结果持久化表。
 - 关联: Plan 第 15 节因子验证报告；Phase 1a-5 单因子验证；Phase 1a-6 因子报告。
 
 ### D19. 单因子验证暂未覆盖分年度、分行业和换手率
@@ -190,9 +196,9 @@
 
 ### D32. backtest 不写 research_runs，回测产物仅以文件形式保存
 
-- 现状: Phase 1b 按要求只读 DuckDB，不写 `research_runs` 或新表，回测参数、指标和报告路径仅保存在 Markdown / CSV 文件产物中。
+- 现状: Phase 5 已让 `ashare backtest` 写入 `research_runs`、`research_run_inputs`、`research_artifacts` 和 `run_manifest.json`，回测报告 Markdown / CSV 可按 `run_id` 查回。
 - 触发: 当需要跨运行查询回测历史、审计参数、关联 git sha 或统一管理报告索引时，仅靠文件产物不足。
-- 决策: 本 phase 保持只读数据库和文件产物；后续正式 run 管理落地时，将回测运行元数据、产物索引和状态纳入 `research_runs` 或等价审计层。
+- 决策: MVP 已解决回测 run 审计和产物索引；仍不新增回测结果明细数据库表，不改变回测撮合、调仓或指标核心逻辑。
 - 关联: D16 显式 universe 快照；D18 单因子验证结果未持久化；Plan 第 6 节 `research_runs`。
 
 ### D33. 真实公告源接入未落地
@@ -232,9 +238,9 @@
 
 ### D38. 综合评分产物暂不写入数据库或 run 索引
 
-- 现状: Phase 3 的 `ashare score` 默认只读 DuckDB，输出 Markdown / CSV / JSON 文件，不写 `research_runs`、不新增评分结果表，也不维护报告产物索引。
+- 现状: Phase 5 已让 `ashare score` 写入 `research_runs`、`research_run_inputs`、`research_artifacts` 和 `run_manifest.json`，包括 strict gate 失败路径的审计记录和实际已生成文件索引；仍不新增评分结果明细表。
 - 触发: 当需要跨日期查询历史综合评分、比较不同权重配置、做线上报告检索或统一审计运行状态时，文件目录不足以支撑稳定机器查询。
-- 决策: Phase 3 保持只读评分层和文件产物；后续正式 run 管理落地时，再设计评分运行元数据、产物索引和可查询评分摘要。
+- 决策: MVP 已解决评分报告级 run 审计和产物索引；后续如需服务直接查询历史评分明细，再设计数据库摘要表。
 - 关联: Phase 3 综合评分；D18 单因子验证结果未持久化；D32 回测产物仅以文件形式保存。
 
 ### D39. LLM event_score 需要事件研究验证后才能启用
@@ -267,16 +273,16 @@
 
 ### D43. scoring 尚未接入正式 run 快照和数据版本审计
 
-- 现状: Phase 3 评分运行依赖显式 CLI 参数、`validation-dir` 文件和当前 DuckDB 内容，`score_metadata.json` 记录配置哈希和路径，但没有统一 `research_runs` 关联、数据快照 ID、验证报告哈希、输入因子快照或 git worktree 状态审计。
+- 现状: Phase 5 已为 scoring 记录 `research_runs`、`config_hash`、`data_snapshot_id`、`git_sha`、`worktree_clean`、`validation-dir` 文件 sha256、`factor_values` metadata fingerprint 和输出 artifact sha256。
 - 触发: 当需要长期复现某次综合评分、比较不同数据版本或把评分报告纳入服务化查询时，仅靠本地文件路径和松散 metadata 不足。
-- 决策: 后续正式 run 管理落地时，把 scoring 输入快照、验证报告哈希、配置哈希、git sha、产物索引和运行状态纳入 `research_runs` 或等价审计层。
+- 决策: MVP 已解决评分 run 的审计链路；仍不把 metadata fingerprint 误称为完整物理快照，后续如需强复现应补真实数据快照层。
 - 关联: Phase 3 综合评分；D16 显式 universe 快照；D18 单因子验证结果未持久化；D38 综合评分产物暂不写入数据库或 run 索引。
 
 ### D44. 服务层暂用文件 artifact registry，未接入正式 research_runs
 
-- 现状: Phase 4 本地服务通过扫描 `data/reports/generated` 下的报告文件提供查询，不写入也不读取正式 `research_runs` 产物索引。
+- 现状: Phase 5 服务层优先读取 DuckDB 中的 `research_runs` 与 `research_artifacts`，并新增 `/api/v1/runs`、`/api/v1/runs/{run_id}`、`/api/v1/runs/{run_id}/artifacts` 和 `/api/v1/runs/{run_id}/manifest`；DuckDB 缺表或不可用时仍 fallback 到 Phase 4 文件扫描。
 - 触发: 当需要跨运行稳定检索、审计某次报告输入、比较不同数据快照或按 run 状态治理产物时，文件 registry 不足以替代结构化运行记录。
-- 决策: 本 phase 保持只读文件 registry；后续正式 run 管理落地时，再把报告产物、配置哈希、数据快照、git 状态和运行状态接入 `research_runs` 或等价索引。
+- 决策: MVP 已解决服务层读取正式 run/artifact index；后续仍需生产级分页、权限、远程部署和更丰富的查询筛选。
 - 关联: Phase 4 服务；Plan 第 18 节服务化；D18；D32；D38；D43。
 
 ### D45. 服务默认仅本地使用，未实现多用户鉴权
