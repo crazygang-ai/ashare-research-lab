@@ -10,6 +10,7 @@ import duckdb
 import pandas as pd
 
 from ashare.pit.asof import DateLike, parse_as_of_date, query_universe_members_as_of
+from ashare.storage.universe_snapshots import load_factor_run_universe
 
 
 SCORE_INPUT_COLUMNS = [
@@ -29,6 +30,7 @@ def load_score_inputs(
     index_code: str,
     factor_names: Sequence[str],
     hard_filter_names: Sequence[str],
+    data_source: str | None = None,
 ) -> pd.DataFrame:
     """Load one-day PIT factor rows for the requested score universe."""
     score_date = parse_as_of_date(as_of_date)
@@ -37,16 +39,29 @@ def load_score_inputs(
     if not index_code or not str(index_code).strip():
         raise ValueError("index_code must be explicitly provided.")
 
-    universe = query_universe_members_as_of(
+    snapshot = load_factor_run_universe(
         connection,
-        score_date,
+        source_run_id=source_run_id,
+        trade_date=score_date,
         index_code=str(index_code),
     )
+    universe_source = "factor_run_universe"
+    if snapshot.empty:
+        universe = query_universe_members_as_of(
+            connection,
+            score_date,
+            index_code=str(index_code),
+            source_tag=None if data_source == "legacy" else data_source,
+        )
+        universe_source = "pit_universe_members_fallback"
+    else:
+        universe = snapshot
     if universe.empty:
         result = pd.DataFrame(columns=SCORE_INPUT_COLUMNS)
         result.attrs["universe"] = pd.DataFrame(columns=["index_code", "stock_code"])
         result.attrs["score_date"] = score_date
         result.attrs["index_code"] = index_code
+        result.attrs["universe_source"] = universe_source
         return result
 
     universe = universe.loc[:, ["index_code", "stock_code"]].drop_duplicates(
@@ -83,6 +98,9 @@ def load_score_inputs(
     )
     normalized.attrs["score_date"] = score_date
     normalized.attrs["index_code"] = index_code
+    normalized.attrs["universe_source"] = universe_source
+    if "fingerprint" in universe.columns and not universe.empty:
+        normalized.attrs["universe_fingerprint"] = str(universe["fingerprint"].iloc[0])
     return normalized
 
 

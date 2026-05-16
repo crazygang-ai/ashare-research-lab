@@ -171,6 +171,7 @@ def test_validate_factors_rejects_hard_filter_without_flag(
 def test_validate_factors_fails_fast_on_duplicate_keys(
     runner_connection: duckdb.DuckDBPyConnection,
 ) -> None:
+    runner_connection.execute("DROP INDEX idx_factor_values_unique_key")
     duplicate_rows = []
     for index in range(6):
         stock_code = f"D{index}"

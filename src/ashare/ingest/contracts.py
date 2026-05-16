@@ -29,7 +29,7 @@ class FieldValidationError(ValueError):
 
 
 DATASET_COLUMNS: dict[str, tuple[str, ...]] = {
-    "trading_calendar": ("trade_date", "is_open", "prev_trade_date", "next_trade_date"),
+    "trading_calendar": ("trade_date", "is_open", "prev_trade_date", "next_trade_date", "source"),
     "securities": (
         "stock_code",
         "stock_name",
@@ -38,6 +38,7 @@ DATASET_COLUMNS: dict[str, tuple[str, ...]] = {
         "delist_date",
         "delist_publish_time",
         "delist_effective_date",
+        "source",
     ),
     "universe_members": (
         "index_code",
@@ -49,6 +50,8 @@ DATASET_COLUMNS: dict[str, tuple[str, ...]] = {
         "out_publish_time",
         "out_effective_date",
         "source",
+        "source_tag",
+        "universe_kind",
     ),
     "daily_prices": (
         "stock_code",
@@ -63,6 +66,7 @@ DATASET_COLUMNS: dict[str, tuple[str, ...]] = {
         "is_suspended",
         "limit_up",
         "limit_down",
+        "source",
     ),
     "valuation_daily": (
         "stock_code",
@@ -78,18 +82,35 @@ DATASET_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
-    "trading_calendar": ("trade_date", "is_open"),
-    "securities": ("stock_code", "exchange", "list_date"),
-    "universe_members": ("index_code", "stock_code", "in_date", "in_effective_date", "source"),
-    "daily_prices": ("stock_code", "trade_date", "open", "high", "low", "close", "volume", "amount"),
+    "trading_calendar": ("trade_date", "is_open", "source"),
+    "securities": ("stock_code", "exchange", "list_date", "source"),
+    "universe_members": (
+        "index_code",
+        "stock_code",
+        "in_date",
+        "in_effective_date",
+        "source",
+        "source_tag",
+        "universe_kind",
+    ),
+    "daily_prices": (
+        "stock_code",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+    ),
     "valuation_daily": ("stock_code", "trade_date", "pe_ttm", "pb", "source"),
 }
 
 KEY_COLUMNS: dict[str, tuple[str, ...]] = {
-    "trading_calendar": ("trade_date",),
-    "securities": ("stock_code",),
-    "universe_members": ("index_code", "stock_code", "in_date"),
-    "daily_prices": ("stock_code", "trade_date"),
+    "trading_calendar": ("source", "trade_date"),
+    "securities": ("source", "stock_code"),
+    "universe_members": ("source_tag", "index_code", "stock_code", "in_date"),
+    "daily_prices": ("source", "stock_code", "trade_date"),
     "valuation_daily": ("source", "stock_code", "trade_date"),
 }
 
@@ -134,7 +155,7 @@ OPTIONAL_COLUMNS: dict[str, tuple[str, ...]] = {
         "delist_effective_date",
     ),
     "universe_members": ("out_date", "in_publish_time", "out_publish_time", "out_effective_date"),
-    "daily_prices": ("adj_factor", "is_suspended", "limit_up", "limit_down"),
+    "daily_prices": ("adj_factor", "is_suspended", "limit_up", "limit_down", "source"),
     "valuation_daily": ("ps", "dividend_yield", "total_mv", "float_mv"),
 }
 
@@ -152,6 +173,8 @@ COLUMN_ALIASES: dict[str, dict[str, str]] = {
         "prev_trade_date": "prev_trade_date",
         "pretrade_date": "prev_trade_date",
         "next_trade_date": "next_trade_date",
+        "source": "source",
+        "source_tag": "source",
     },
     "securities": {
         "stock_code": "stock_code",
@@ -177,6 +200,8 @@ COLUMN_ALIASES: dict[str, dict[str, str]] = {
         "退市日期": "delist_date",
         "delist_publish_time": "delist_publish_time",
         "delist_effective_date": "delist_effective_date",
+        "source": "source",
+        "source_tag": "source",
     },
     "universe_members": {
         "index_code": "index_code",
@@ -204,6 +229,9 @@ COLUMN_ALIASES: dict[str, dict[str, str]] = {
         "out_publish_time": "out_publish_time",
         "out_effective_date": "out_effective_date",
         "source": "source",
+        "source_tag": "source_tag",
+        "universe_kind": "universe_kind",
+        "universe_mode": "universe_kind",
     },
     "daily_prices": {
         "stock_code": "stock_code",
@@ -240,6 +268,8 @@ COLUMN_ALIASES: dict[str, dict[str, str]] = {
         "涨停": "limit_up",
         "limit_down": "limit_down",
         "跌停": "limit_down",
+        "source": "source",
+        "source_tag": "source",
     },
     "valuation_daily": {
         "stock_code": "stock_code",

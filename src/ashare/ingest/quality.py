@@ -56,7 +56,7 @@ def build_data_quality_report(
     report_warnings = list(warnings)
     if effective_source == "csv_fallback":
         report_warnings.append("CSV fallback was used after primary provider failure.")
-    if universe_members_mode != "historical":
+    if universe_members_mode != "historical_pit":
         report_warnings.append("Index members are treated as a current snapshot, not full PIT history.")
 
     dataset_summary = _dataset_summary(frames, sample_stock_codes)
@@ -142,6 +142,8 @@ def _dataset_summary(
                 "stock_count": stock_count,
                 "start_date": start,
                 "end_date": end,
+                "source_values": _source_values(frame),
+                "source_tag_values": _source_tag_values(frame),
                 "duplicate_key_rows": duplicate_key_count(dataset, frame),
                 "coverage_rate": coverage_rate,
             }
@@ -211,6 +213,7 @@ def _markdown(report: DataQualityReport) -> str:
             f"- universe_as_of_date: {report.universe_as_of_date.isoformat()}",
             f"- sample_stock_codes: {sample_codes}",
             f"- csv_fallback_used: {report.effective_source == 'csv_fallback'}",
+            f"- source_values: {_source_values_text(report.dataset_summary)}",
             "",
             "## Dataset Summary",
             "",
@@ -223,6 +226,10 @@ def _markdown(report: DataQualityReport) -> str:
             "## Duplicate Key Check",
             "",
             "See `dataset_summary.csv` column `duplicate_key_rows`.",
+            "",
+            "## Source Isolation",
+            "",
+            "See `dataset_summary.csv` columns `source_values` and `source_tag_values`.",
             "",
             "## Price And Valuation Checks",
             "",
@@ -258,6 +265,31 @@ def _date_count(frame: pd.DataFrame | None, column: str) -> int:
     if frame is None or frame.empty or column not in frame:
         return 0
     return int(frame[column].nunique())
+
+
+def _source_values(frame: pd.DataFrame) -> str:
+    if "source" not in frame.columns or frame.empty:
+        return ""
+    values = sorted(str(value) for value in frame["source"].dropna().unique().tolist())
+    return ",".join(values)
+
+
+def _source_tag_values(frame: pd.DataFrame) -> str:
+    if "source_tag" not in frame.columns or frame.empty:
+        return ""
+    values = sorted(str(value) for value in frame["source_tag"].dropna().unique().tolist())
+    return ",".join(values)
+
+
+def _source_values_text(dataset_summary: pd.DataFrame) -> str:
+    if dataset_summary.empty or "source_values" not in dataset_summary.columns:
+        return ""
+    rows = []
+    for row in dataset_summary.itertuples(index=False):
+        value = getattr(row, "source_values", "")
+        if value:
+            rows.append(f"{row.dataset}={value}")
+    return "; ".join(rows) if rows else "(none)"
 
 
 def _sample_codes_from_warnings(warnings: Sequence[str]) -> str:

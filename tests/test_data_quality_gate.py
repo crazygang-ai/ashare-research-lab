@@ -30,7 +30,10 @@ def _build_gate_db(path: Path, *, include_prices: bool = True) -> None:
     connection = duckdb.connect(str(path))
     try:
         connection.execute(
-            "INSERT INTO trading_calendar VALUES ('2026-01-02', true, NULL, NULL)"
+            """
+            INSERT INTO trading_calendar (trade_date, is_open, prev_trade_date, next_trade_date)
+            VALUES ('2026-01-02', true, NULL, NULL)
+            """
         )
         connection.executemany(
             """

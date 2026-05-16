@@ -33,18 +33,19 @@ def calculate_synthetic_benchmarks(
     signal_dates: Sequence[DateLike],
     benchmark_config: Mapping[str, object] | None = None,
     initial_nav: float = 1.0,
+    data_source: str | None = None,
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
     """Calculate monthly static cap-weight and equal-weight synthetic benchmarks."""
     start = parse_as_of_date(start_date)
     end = parse_as_of_date(end_date)
-    trading_dates = open_trading_dates_between(connection, start, end)
+    trading_dates = open_trading_dates_between(connection, start, end, data_source=data_source)
     if not trading_dates:
         return pd.DataFrame(columns=BENCHMARK_COLUMNS), ()
 
     parsed_signal_dates = sorted(parse_as_of_date(value) for value in signal_dates)
     if not parsed_signal_dates:
         parsed_signal_dates = [trading_dates[0]]
-    price_map = _price_map(connection, min(trading_dates), max(trading_dates))
+    price_map = _price_map(connection, min(trading_dates), max(trading_dates), data_source=data_source)
     warnings: list[str] = []
     cap_nav = float(initial_nav)
     equal_nav = float(initial_nav)
@@ -58,6 +59,7 @@ def calculate_synthetic_benchmarks(
             signal_date=locked_signal,
             index_code=index_code,
             benchmark_config=benchmark_config,
+            data_source=data_source,
         )
         cap_return, cap_coverage = _portfolio_return(
             members=members,
@@ -104,11 +106,13 @@ def _benchmark_members(
     signal_date: date,
     index_code: str,
     benchmark_config: Mapping[str, object] | None,
+    data_source: str | None,
 ) -> pd.DataFrame:
     universe = query_universe_members_as_of(
         connection,
         signal_date,
         index_code=index_code,
+        source_tag=None if data_source == "legacy" else data_source,
     )
     if universe.empty:
         return pd.DataFrame(columns=["stock_code", "cap_weight", "equal_weight"])
@@ -119,7 +123,7 @@ def _benchmark_members(
         .sort_values("stock_code", kind="mergesort")
         .reset_index(drop=True)
     )
-    valuations = _valuation_on_date(connection, signal_date)
+    valuations = _valuation_on_date(connection, signal_date, data_source=data_source)
     members = members.merge(valuations, on="stock_code", how="left")
     priority = _market_cap_priority(benchmark_config)
     members["market_cap"] = pd.NA
@@ -145,16 +149,19 @@ def _benchmark_members(
 def _valuation_on_date(
     connection: duckdb.DuckDBPyConnection,
     signal_date: date,
+    data_source: str | None = None,
 ) -> pd.DataFrame:
-    frame = connection.execute(
-        """
+    sql = """
         SELECT stock_code, float_mv, total_mv
         FROM valuation_daily
         WHERE trade_date = ?
-        ORDER BY stock_code
-        """,
-        [signal_date],
-    ).df()
+    """
+    params: list[object] = [signal_date]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    sql += " ORDER BY stock_code"
+    frame = connection.execute(sql, params).df()
     if frame.empty:
         return pd.DataFrame(columns=["stock_code", "float_mv", "total_mv"])
     return frame
@@ -203,16 +210,19 @@ def _price_map(
     connection: duckdb.DuckDBPyConnection,
     start_date: date,
     end_date: date,
+    data_source: str | None = None,
 ) -> dict[tuple[str, date], dict[str, object]]:
-    frame = connection.execute(
-        """
+    sql = """
         SELECT stock_code, trade_date, close, adj_factor, is_suspended
         FROM daily_prices
         WHERE trade_date BETWEEN ? AND ?
-        ORDER BY stock_code, trade_date
-        """,
-        [start_date, end_date],
-    ).df()
+    """
+    params: list[object] = [start_date, end_date]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    sql += " ORDER BY stock_code, trade_date"
+    frame = connection.execute(sql, params).df()
     result: dict[tuple[str, date], dict[str, object]] = {}
     if frame.empty:
         return result

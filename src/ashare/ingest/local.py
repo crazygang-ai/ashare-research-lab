@@ -26,8 +26,10 @@ TABLE_ORDER = (
     "risk_events",
 )
 
+DEFAULT_LOCAL_SOURCE = "fixture"
+
 TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "trading_calendar": ("trade_date", "is_open", "prev_trade_date", "next_trade_date"),
+    "trading_calendar": ("trade_date", "is_open", "prev_trade_date", "next_trade_date", "source"),
     "securities": (
         "stock_code",
         "stock_name",
@@ -36,6 +38,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "delist_date",
         "delist_publish_time",
         "delist_effective_date",
+        "source",
     ),
     "industry_classifications": (
         "stock_code",
@@ -61,6 +64,8 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "out_publish_time",
         "out_effective_date",
         "source",
+        "source_tag",
+        "universe_kind",
     ),
     "daily_prices": (
         "stock_code",
@@ -75,6 +80,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "is_suspended",
         "limit_up",
         "limit_down",
+        "source",
     ),
     "st_status": (
         "stock_code",
@@ -148,7 +154,8 @@ VISIBILITY_TABLES = {
     "st_status",
 }
 OPTIONAL_INPUT_COLUMNS: dict[str, set[str]] = {
-    "securities": {"delist_publish_time", "delist_effective_date"},
+    "trading_calendar": {"source"},
+    "securities": {"delist_publish_time", "delist_effective_date", "source"},
     "industry_classifications": {
         "in_publish_time",
         "in_effective_date",
@@ -160,6 +167,8 @@ OPTIONAL_INPUT_COLUMNS: dict[str, set[str]] = {
         "in_effective_date",
         "out_publish_time",
         "out_effective_date",
+        "source_tag",
+        "universe_kind",
     },
     "st_status": {
         "in_publish_time",
@@ -167,6 +176,7 @@ OPTIONAL_INPUT_COLUMNS: dict[str, set[str]] = {
         "out_publish_time",
         "out_effective_date",
     },
+    "daily_prices": {"source"},
     "fundamental_reports": {"effective_date"},
     "announcements": {"source", "source_tag", "effective_date"},
     "risk_events": {"effective_date"},
@@ -322,6 +332,16 @@ def _convert_row(
     row: dict[str, Any] = {}
     for column in TABLE_COLUMNS[table]:
         row[column] = _convert_value(column, raw_row.get(column, ""))
+
+    if table in {"trading_calendar", "securities", "daily_prices"} and row["source"] is None:
+        row["source"] = DEFAULT_LOCAL_SOURCE
+    if table == "universe_members":
+        if row["source"] is None:
+            row["source"] = DEFAULT_LOCAL_SOURCE
+        if row["source_tag"] is None:
+            row["source_tag"] = row["source"]
+        if row["universe_kind"] is None:
+            row["universe_kind"] = "historical_pit"
 
     _fill_effective_dates(table, row, trading_days)
     return row

@@ -13,6 +13,7 @@ import pandas as pd
 import yaml
 
 from ashare.pit.asof import DateLike, parse_as_of_date
+from ashare.storage.universe_snapshots import load_factor_run_universe
 from ashare.validation.config import merge_validation_config
 from ashare.validation.decay import aggregate_decay_curve
 from ashare.validation.ic import calculate_rank_ic, summarize_ic
@@ -80,6 +81,10 @@ def validate_factors(
     include_hard_filters: bool = False,
     validation_config: Mapping[str, object] | None = None,
     data_dictionary: Mapping[str, object] | None = None,
+    index_code: str | None = None,
+    data_source: str | None = None,
+    require_universe_snapshot: bool = False,
+    require_historical_pit_universe: bool = False,
 ) -> FactorValidationResult:
     """Run single-factor validation on already-stored ``factor_values`` rows."""
     if not source_run_id or not str(source_run_id).strip():
@@ -132,9 +137,17 @@ def validate_factors(
         filtered_factor_values=factor_values,
         require_same_as_of_trade_date=require_same_as_of,
         universe_factor_names=universe_factor_names,
+        index_code=index_code,
+        require_universe_snapshot=require_universe_snapshot,
+        require_historical_pit_universe=require_historical_pit_universe,
     )
 
-    labels = build_forward_return_labels(connection, signal_dates, parsed_horizons)
+    labels = build_forward_return_labels(
+        connection,
+        signal_dates,
+        parsed_horizons,
+        data_source=data_source,
+    )
     label_summary = _label_summary(labels, parsed_horizons)
 
     factor_labels = factor_values.merge(
@@ -267,7 +280,10 @@ def _normalize_factor_values(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _fail_on_duplicate_factor_keys(factor_values: pd.DataFrame) -> None:
     duplicate_counts = (
-        factor_values.groupby(["source_run_id", "stock_code", "trade_date", "factor_name"])
+        factor_values.groupby(
+            ["source_run_id", "stock_code", "trade_date", "as_of_date", "factor_name"],
+            dropna=False,
+        )
         .size()
         .reset_index(name="row_count")
     )
@@ -278,11 +294,11 @@ def _fail_on_duplicate_factor_keys(factor_values: pd.DataFrame) -> None:
     for row in duplicates.head(5).itertuples(index=False):
         samples.append(
             f"({row.source_run_id}, {row.stock_code}, {row.trade_date}, "
-            f"{row.factor_name}, count={row.row_count})"
+            f"{row.as_of_date}, {row.factor_name}, count={row.row_count})"
         )
     raise ValueError(
         "Duplicate factor_values rows for "
-        "(source_run_id, stock_code, trade_date, factor_name). "
+        "(source_run_id, stock_code, trade_date, as_of_date, factor_name). "
         f"Examples: {'; '.join(samples)}"
     )
 
@@ -295,6 +311,9 @@ def _coverage(
     filtered_factor_values: pd.DataFrame,
     require_same_as_of_trade_date: bool,
     universe_factor_names: Sequence[str],
+    index_code: str | None,
+    require_universe_snapshot: bool,
+    require_historical_pit_universe: bool,
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -311,12 +330,20 @@ def _coverage(
             trade_date=signal_date,
             require_same_as_of_trade_date=require_same_as_of_trade_date,
             universe_factor_names=universe_factor_names,
+            index_code=index_code,
+            require_universe_snapshot=require_universe_snapshot,
+            require_historical_pit_universe=require_historical_pit_universe,
         )
         if universe_source == "factor_values_fallback":
             warnings.append(
                 f"Coverage universe fallback used for {signal_date.isoformat()}; "
                 "coverage may be overestimated because it is inferred from visible "
                 "factor_values rows."
+            )
+        elif universe_source.startswith("factor_run_universe:") and "historical_pit" not in universe_source:
+            warnings.append(
+                f"Coverage universe snapshot for {signal_date.isoformat()} is "
+                f"{universe_source}; formal historical PIT conclusions are not supported."
             )
 
         universe_count = len(universe_codes)
@@ -351,7 +378,37 @@ def _universe_for_date(
     trade_date: date,
     require_same_as_of_trade_date: bool,
     universe_factor_names: Sequence[str],
+    index_code: str | None,
+    require_universe_snapshot: bool,
+    require_historical_pit_universe: bool,
 ) -> tuple[set[str], str]:
+    snapshot = load_factor_run_universe(
+        connection,
+        source_run_id=source_run_id,
+        trade_date=trade_date,
+        index_code=index_code,
+    )
+    if not snapshot.empty:
+        kinds = sorted(str(value) for value in snapshot["universe_kind"].dropna().unique())
+        if require_historical_pit_universe and kinds != ["historical_pit"]:
+            raise ValueError(
+                "Formal validation requires historical PIT universe snapshots; "
+                f"found universe_kind={','.join(kinds) or 'unknown'} for "
+                f"{source_run_id} on {trade_date.isoformat()}."
+            )
+        codes = set(snapshot["stock_code"].dropna().astype(str).tolist())
+        source = "factor_run_universe"
+        if kinds:
+            source += ":" + ",".join(kinds)
+        return codes, source
+
+    if require_universe_snapshot:
+        raise ValueError(
+            "Formal validation requires factor_run_universe rows for source_run_id "
+            f"{source_run_id} on {trade_date.isoformat()}; rerun calculate-factors "
+            "with the Phase 8 schema to create explicit universe snapshots."
+        )
+
     hard_filter_codes = _stock_codes_for_factor_names(
         connection,
         source_run_id,

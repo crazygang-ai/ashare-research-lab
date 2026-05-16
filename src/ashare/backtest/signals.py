@@ -8,6 +8,7 @@ import duckdb
 import pandas as pd
 
 from ashare.pit.asof import DateLike, parse_as_of_date, query_universe_members_as_of
+from ashare.storage.universe_snapshots import load_factor_run_universe
 
 
 HARD_FILTER_NAMES = ("is_st", "is_suspended", "is_delisted", "low_liquidity")
@@ -29,6 +30,7 @@ def build_topn_targets(
     index_code: str,
     top_n: int,
     data_dictionary: Mapping[str, object],
+    data_source: str | None = None,
 ) -> pd.DataFrame:
     """Build PIT Top N equal-weight targets from stored ``factor_values``."""
     parsed_signal_date = parse_as_of_date(signal_date)
@@ -48,11 +50,21 @@ def build_topn_targets(
     if direction not in {"higher_is_better", "lower_is_better"}:
         raise ValueError(f"sort_factor must have a sortable direction: {sort_factor}")
 
-    universe = query_universe_members_as_of(
+    snapshot = load_factor_run_universe(
         connection,
-        parsed_signal_date,
+        source_run_id=source_run_id,
+        trade_date=parsed_signal_date,
         index_code=index_code,
     )
+    if snapshot.empty:
+        universe = query_universe_members_as_of(
+            connection,
+            parsed_signal_date,
+            index_code=index_code,
+            source_tag=None if data_source == "legacy" else data_source,
+        )
+    else:
+        universe = snapshot
     universe_codes = sorted(universe["stock_code"].dropna().unique().tolist())
     if not universe_codes:
         return _empty_targets()

@@ -121,9 +121,21 @@ def test_fake_provider_drives_real_pilot_and_source_tag_is_written(tmp_path: Pat
             row[0]
             for row in connection.execute("SELECT DISTINCT source FROM valuation_daily").fetchall()
         }
-        universe_sources = {
+        price_sources = {
             row[0]
-            for row in connection.execute("SELECT DISTINCT source FROM universe_members").fetchall()
+            for row in connection.execute("SELECT DISTINCT source FROM daily_prices").fetchall()
+        }
+        security_sources = {
+            row[0]
+            for row in connection.execute("SELECT DISTINCT source FROM securities").fetchall()
+        }
+        calendar_sources = {
+            row[0]
+            for row in connection.execute("SELECT DISTINCT source FROM trading_calendar").fetchall()
+        }
+        universe_sources = {
+            row
+            for row in connection.execute("SELECT DISTINCT source, source_tag FROM universe_members").fetchall()
         }
         factor_rows = connection.execute("SELECT COUNT(*) FROM factor_values").fetchone()[0]
         run_rows = connection.execute("SELECT COUNT(*) FROM research_runs").fetchone()[0]
@@ -133,7 +145,10 @@ def test_fake_provider_drives_real_pilot_and_source_tag_is_written(tmp_path: Pat
     assert result.effective_source == "akshare"
     assert result.row_counts["daily_prices"] == 6
     assert valuation_sources == {"phase1a7-test"}
-    assert universe_sources == {"phase1a7-test"}
+    assert price_sources == {"phase1a7-test"}
+    assert security_sources == {"phase1a7-test"}
+    assert calendar_sources == {"phase1a7-test"}
+    assert universe_sources == {("phase1a7-test", "phase1a7-test")}
     assert factor_rows == 0
     assert run_rows == 0
 
@@ -281,7 +296,7 @@ def test_bounded_replace_is_idempotent_and_asof_reads_new_rows(tmp_path: Path) -
     assert len(snapshot.universe_members) == 2
 
 
-def test_overlapping_different_source_tag_fails_fast(tmp_path: Path) -> None:
+def test_overlapping_different_source_tags_are_source_isolated(tmp_path: Path) -> None:
     db_path = tmp_path / "pilot.duckdb"
     common = {
         "db_path": db_path,
@@ -298,5 +313,20 @@ def test_overlapping_different_source_tag_fails_fast(tmp_path: Path) -> None:
     }
     ingest_real_pilot(source_tag="source-a", **common)
 
-    with pytest.raises(ValueError, match="different source tags"):
-        ingest_real_pilot(source_tag="source-b", **common)
+    ingest_real_pilot(source_tag="source-b", **common)
+    connection = duckdb.connect(str(db_path), read_only=True)
+    try:
+        price_counts = dict(
+            connection.execute(
+                """
+                SELECT source, COUNT(*)
+                FROM daily_prices
+                GROUP BY source
+                ORDER BY source
+                """
+            ).fetchall()
+        )
+    finally:
+        connection.close()
+
+    assert price_counts == {"source-a": 6, "source-b": 6}

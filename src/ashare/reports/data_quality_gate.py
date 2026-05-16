@@ -21,6 +21,7 @@ from ashare.pit.asof import (
 from ashare.reports.run_summary import ArtifactBundle, fail_if_exists, jsonable, write_json
 from ashare.scan.candidates import HARD_FILTER_NAMES
 from ashare.storage.db import CURRENT_SCHEMA_VERSION
+from ashare.storage.universe_snapshots import load_factor_run_universe
 
 
 GATE_COLUMNS = [
@@ -79,6 +80,7 @@ def build_data_quality_gate(
     config_paths: Sequence[Path],
     repo_root: Path,
     index_code: str | None = None,
+    data_source: str | None = None,
     gate_config: Mapping[str, Any] | None = None,
 ) -> DataQualityGateResult:
     """Evaluate the minimum formal daily-report data quality checks."""
@@ -87,7 +89,13 @@ def build_data_quality_gate(
     rows: list[dict[str, object]] = []
 
     _calendar_check(connection, parsed_as_of, rows)
-    universe_codes = _target_universe(connection, parsed_as_of, index_code)
+    universe_codes, universe_source = _target_universe(
+        connection,
+        parsed_as_of,
+        source_run_id=source_run_id,
+        index_code=index_code,
+        data_source=data_source,
+    )
     _append(
         rows,
         "target_universe",
@@ -106,6 +114,7 @@ def build_data_quality_gate(
         parsed_as_of=parsed_as_of,
         universe_codes=universe_codes,
         min_coverage=float(config["min_price_coverage"]),
+        data_source=data_source,
         rows=rows,
         check_name="daily_prices_coverage",
     )
@@ -116,6 +125,7 @@ def build_data_quality_gate(
         parsed_as_of=parsed_as_of,
         universe_codes=universe_codes,
         min_coverage=float(config["min_valuation_coverage"]),
+        data_source=data_source,
         rows=rows,
         check_name="valuation_daily_coverage",
     )
@@ -160,6 +170,8 @@ def build_data_quality_gate(
         "as_of_date": parsed_as_of.isoformat(),
         "source_run_id": source_run_id,
         "index_code": index_code,
+        "data_source": data_source,
+        "universe_source": universe_source,
         "gate_config": dict(config),
         "universe_size": len(universe_codes),
     }
@@ -230,21 +242,37 @@ def _calendar_check(
 def _target_universe(
     connection: duckdb.DuckDBPyConnection,
     parsed_as_of: date,
+    source_run_id: str,
     index_code: str | None,
-) -> tuple[str, ...]:
+    data_source: str | None,
+) -> tuple[tuple[str, ...], str]:
+    snapshot = load_factor_run_universe(
+        connection,
+        source_run_id=source_run_id,
+        trade_date=parsed_as_of,
+        index_code=index_code,
+    )
+    if not snapshot.empty:
+        return tuple(sorted(set(snapshot["stock_code"].astype(str)))), "factor_run_universe"
     if _table_exists(connection, "universe_members"):
         universe = query_universe_members_as_of(
             connection,
             parsed_as_of,
             index_code=index_code,
+            source_tag=None if data_source == "legacy" else data_source,
         )
         if not universe.empty:
-            return tuple(sorted(set(universe["stock_code"].astype(str))))
+            return tuple(sorted(set(universe["stock_code"].astype(str)))), "pit_universe_members"
     if _table_exists(connection, "securities"):
-        securities = query_securities_as_of(connection, parsed_as_of, include_delisted=False)
+        securities = query_securities_as_of(
+            connection,
+            parsed_as_of,
+            include_delisted=False,
+            source=data_source,
+        )
         if not securities.empty:
-            return tuple(sorted(set(securities["stock_code"].astype(str))))
-    return ()
+            return tuple(sorted(set(securities["stock_code"].astype(str)))), "securities_fallback"
+    return (), "missing"
 
 
 def _coverage_check(
@@ -255,6 +283,7 @@ def _coverage_check(
     parsed_as_of: date,
     universe_codes: Sequence[str],
     min_coverage: float,
+    data_source: str | None,
     rows: list[dict[str, object]],
     check_name: str,
 ) -> None:
@@ -282,6 +311,10 @@ def _coverage_check(
         return
     placeholders = ", ".join("?" for _ in universe_codes)
     params: list[Any] = [parsed_as_of, *universe_codes]
+    source_filter = ""
+    if data_source is not None and _table_has_column(connection, table_name, "source"):
+        source_filter = " AND source = ?"
+        params.append(data_source)
     covered = int(
         connection.execute(
             f"""
@@ -289,6 +322,7 @@ def _coverage_check(
             FROM {table_name}
             WHERE {date_column} = ?
               AND stock_code IN ({placeholders})
+              {source_filter}
             """,
             params,
         ).fetchone()[0]
@@ -641,6 +675,24 @@ def _table_exists(connection: duckdb.DuckDBPyConnection, table_name: str) -> boo
           AND table_name = ?
         """,
         [table_name],
+    ).fetchone()
+    return int(row[0]) > 0
+
+
+def _table_has_column(
+    connection: duckdb.DuckDBPyConnection,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'main'
+          AND table_name = ?
+          AND column_name = ?
+        """,
+        [table_name, column_name],
     ).fetchone()
     return int(row[0]) > 0
 

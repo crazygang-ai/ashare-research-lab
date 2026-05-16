@@ -21,7 +21,10 @@ def _build_db(path: Path, *, include_prices: bool = True) -> None:
     connection = duckdb.connect(str(path))
     try:
         connection.execute(
-            "INSERT INTO trading_calendar VALUES ('2026-01-02', true, NULL, NULL)"
+            """
+            INSERT INTO trading_calendar (trade_date, is_open, prev_trade_date, next_trade_date, source)
+            VALUES ('2026-01-02', true, NULL, NULL, 'fixture')
+            """
         )
         connection.executemany(
             """
@@ -32,8 +35,8 @@ def _build_db(path: Path, *, include_prices: bool = True) -> None:
         )
         connection.executemany(
             """
-            INSERT INTO securities (stock_code, stock_name, exchange, list_date)
-            VALUES (?, ?, 'SSE', '2020-01-01')
+            INSERT INTO securities (stock_code, stock_name, exchange, list_date, source)
+            VALUES (?, ?, 'SSE', '2020-01-01', 'fixture')
             """,
             [("A", "Alpha"), ("B", "Beta")],
         )
@@ -42,9 +45,9 @@ def _build_db(path: Path, *, include_prices: bool = True) -> None:
                 """
                 INSERT INTO daily_prices (
                     stock_code, trade_date, open, high, low, close, volume, amount,
-                    adj_factor, is_suspended, limit_up, limit_down
+                    adj_factor, is_suspended, limit_up, limit_down, source
                 )
-                VALUES (?, '2026-01-02', 1, 1, 1, 1, 1000, 1000, 1, false, NULL, NULL)
+                VALUES (?, '2026-01-02', 1, 1, 1, 1, 1000, 1000, 1, false, NULL, NULL, 'fixture')
                 """,
                 [("A",), ("B",)],
             )

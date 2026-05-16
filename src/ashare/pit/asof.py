@@ -48,6 +48,7 @@ def query_daily_prices_as_of(
     connection: duckdb.DuckDBPyConnection,
     as_of_date: DateLike,
     stock_code: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return prices visible as of ``as_of_date`` using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -64,7 +65,8 @@ def query_daily_prices_as_of(
             adj_factor,
             is_suspended,
             limit_up,
-            limit_down
+            limit_down,
+            source
         FROM daily_prices
         WHERE trade_date <= ?
     """
@@ -72,6 +74,9 @@ def query_daily_prices_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code, trade_date"
 
     return connection.execute(sql, params).df()
@@ -81,6 +86,7 @@ def query_valuation_daily_as_of(
     connection: duckdb.DuckDBPyConnection,
     as_of_date: DateLike,
     stock_code: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return valuations visible as of ``as_of_date`` using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -102,6 +108,9 @@ def query_valuation_daily_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code, trade_date"
 
     return connection.execute(sql, params).df()
@@ -112,6 +121,8 @@ def query_universe_members_as_of(
     as_of_date: DateLike,
     index_code: str | None = None,
     stock_code: str | None = None,
+    source_tag: str | None = None,
+    allow_current_snapshot: bool = True,
 ) -> pd.DataFrame:
     """Return active universe members using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -140,7 +151,9 @@ def query_universe_members_as_of(
                 THEN out_effective_date
                 ELSE NULL
             END AS out_effective_date,
-            source
+            source,
+            source_tag,
+            universe_kind
         FROM universe_members
         WHERE in_date <= ?
           AND COALESCE(in_effective_date, in_date) <= ?
@@ -165,6 +178,11 @@ def query_universe_members_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source_tag is not None:
+        sql += " AND COALESCE(source_tag, source) = ?"
+        params.append(source_tag)
+    if not allow_current_snapshot:
+        sql += " AND COALESCE(universe_kind, 'unknown') = 'historical_pit'"
     sql += " ORDER BY index_code, stock_code, in_date"
 
     return connection.execute(sql, params).df()
@@ -175,6 +193,7 @@ def query_securities_as_of(
     as_of_date: DateLike,
     include_delisted: bool = False,
     stock_code: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return listed securities as of ``as_of_date`` using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -207,6 +226,8 @@ def query_securities_as_of(
                 AND delist_date <= ?
                 AND COALESCE(delist_effective_date, delist_date) <= ?
             ) AS is_delisted_as_of
+            ,
+            source
         FROM securities
         WHERE list_date <= ?
     """
@@ -231,6 +252,9 @@ def query_securities_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code"
 
     return connection.execute(sql, params).df()
@@ -481,24 +505,37 @@ def build_as_of_snapshot(
     industry_version: str | None = None,
     include_delisted: bool = False,
     stock_code: str | None = None,
+    data_source: str | None = None,
 ) -> AsOfSnapshot:
     """Build a deterministic collection of PIT query results from a caller-owned connection."""
     parsed_date = parse_as_of_date(as_of_date)
     return AsOfSnapshot(
         as_of_date=parsed_date,
-        daily_prices=query_daily_prices_as_of(connection, parsed_date, stock_code=stock_code),
-        valuation_daily=query_valuation_daily_as_of(connection, parsed_date, stock_code=stock_code),
+        daily_prices=query_daily_prices_as_of(
+            connection,
+            parsed_date,
+            stock_code=stock_code,
+            source=data_source,
+        ),
+        valuation_daily=query_valuation_daily_as_of(
+            connection,
+            parsed_date,
+            stock_code=stock_code,
+            source=data_source,
+        ),
         universe_members=query_universe_members_as_of(
             connection,
             parsed_date,
             index_code=index_code,
             stock_code=stock_code,
+            source_tag=None if data_source == "legacy" else data_source,
         ),
         securities=query_securities_as_of(
             connection,
             parsed_date,
             include_delisted=include_delisted,
             stock_code=stock_code,
+            source=data_source,
         ),
         st_status=query_st_status_as_of(connection, parsed_date, stock_code=stock_code),
         industry_classifications=query_industry_classifications_as_of(
@@ -526,6 +563,7 @@ def load_as_of_snapshot(
     industry_version: str | None = None,
     include_delisted: bool = False,
     stock_code: str | None = None,
+    data_source: str | None = None,
 ) -> AsOfSnapshot:
     """Open DuckDB read-only, build an as-of snapshot, and always close the connection."""
     connection = duckdb.connect(str(db_path), read_only=True)
@@ -538,6 +576,7 @@ def load_as_of_snapshot(
             industry_version=industry_version,
             include_delisted=include_delisted,
             stock_code=stock_code,
+            data_source=data_source,
         )
     finally:
         connection.close()

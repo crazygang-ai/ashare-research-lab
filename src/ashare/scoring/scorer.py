@@ -111,6 +111,7 @@ def compute_composite_scores(
     data_dictionary: Mapping[str, object],
     validation_gate: ValidationGateResult,
     top_n: int | None = None,
+    data_source: str | None = None,
 ) -> CompositeScoreResult:
     """Compute one-day Phase 3 composite scores from stored factor values."""
     score_date = parse_as_of_date(as_of_date)
@@ -135,7 +136,14 @@ def compute_composite_scores(
         index_code=index_code,
         factor_names=[*positive_factors, *risk_factors],
         hard_filter_names=hard_filter_names,
+        data_source=data_source,
     )
+    universe_source = str(factor_values.attrs.get("universe_source", "unknown"))
+    universe_warnings = []
+    if universe_source != "factor_run_universe":
+        universe_warnings.append(
+            "Score used PIT universe fallback because factor_run_universe was missing."
+        )
     universe = factor_values.attrs.get("universe", pd.DataFrame(columns=["stock_code"]))
     hard_filter_result = apply_hard_filters(
         factor_values=factor_values,
@@ -191,6 +199,7 @@ def compute_composite_scores(
         connection=connection,
         as_of_date=score_date,
         candidates=computation.scored_candidates_all,
+        data_source=data_source,
     )
     scored = enriched.sort_values(
         ["total_score", "stock_code"],
@@ -210,7 +219,7 @@ def compute_composite_scores(
         factor_normalized_scores=computation.factor_normalized_scores,
         hard_filter_exclusions=hard_filter_result.exclusions,
         validation_gate=_ordered_validation_gate(validation_gate.table),
-        warnings=tuple(dict.fromkeys([*eligibility_warnings, *computation.warnings])),
+        warnings=tuple(dict.fromkeys([*eligibility_warnings, *universe_warnings, *computation.warnings])),
     )
 
 
@@ -514,11 +523,17 @@ def _enrich_candidates(
     connection: duckdb.DuckDBPyConnection,
     as_of_date: date,
     candidates: pd.DataFrame,
+    data_source: str | None,
 ) -> pd.DataFrame:
     result = candidates.copy()
     if result.empty:
         return result
-    securities = query_securities_as_of(connection, as_of_date, include_delisted=True)
+    securities = query_securities_as_of(
+        connection,
+        as_of_date,
+        include_delisted=True,
+        source=data_source,
+    )
     if not securities.empty:
         securities = securities.loc[:, ["stock_code", "stock_name"]].drop_duplicates(
             "stock_code",

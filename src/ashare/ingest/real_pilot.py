@@ -237,6 +237,12 @@ def _prepare_provider_data(
 ) -> _PreparedData:
     cache_events: list[dict[str, object]] = []
     runtime_warnings = list(warnings)
+    capability_check = getattr(provider, "capability_check", None)
+    if callable(capability_check):
+        check = capability_check()
+        runtime_warnings.append(check.as_warning())
+        if getattr(check, "status", "PASS") != "PASS":
+            raise ProviderError(check.as_warning())
 
     trading_raw = _cached_fetch(
         provider,
@@ -310,6 +316,7 @@ def _prepare_provider_data(
 
     trading = normalize_dataset("trading_calendar", trading_raw)
     trading = _filter_date_range(trading, "trade_date", start_date, end_date)
+    trading["source"] = source_tag
     frames["trading_calendar"], validation_issues = validate_dataset("trading_calendar", trading)
     issues.extend(validation_issues)
 
@@ -330,6 +337,7 @@ def _prepare_provider_data(
     securities, securities_warnings = _prepare_securities(
         securities,
         members=frames["universe_members"],
+        source_tag=source_tag,
         member_security_names=member_security_names,
         universe_as_of_date=universe_as_of_date,
         stock_codes=sample_stock_codes,
@@ -341,6 +349,7 @@ def _prepare_provider_data(
 
     daily_prices = normalize_dataset("daily_prices", prices_raw)
     daily_prices = _filter_stock_and_dates(daily_prices, sample_stock_codes, start_date, end_date)
+    daily_prices["source"] = source_tag
     frames["daily_prices"], validation_issues = validate_dataset("daily_prices", daily_prices)
     issues.extend(validation_issues)
 
@@ -522,6 +531,8 @@ def _prepare_members(
         trading_calendar=trading_calendar,
     )
     result["source"] = source_tag
+    result["source_tag"] = source_tag
+    result["universe_kind"] = _universe_members_mode(result, universe_as_of_date)
     result = result.loc[result["stock_code"].isin(stock_codes)]
     result = result.loc[result["index_code"] == index_code]
     return result.reset_index(drop=True)
@@ -531,6 +542,7 @@ def _prepare_securities(
     frame: pd.DataFrame,
     *,
     members: pd.DataFrame,
+    source_tag: str,
     member_security_names: pd.Series | None,
     universe_as_of_date: date,
     stock_codes: Sequence[str],
@@ -592,6 +604,7 @@ def _prepare_securities(
         fallback_column="delist_date",
         trading_calendar=trading_calendar,
     )
+    result["source"] = source_tag
     return result.loc[:, DATASET_COLUMNS["securities"]].reset_index(drop=True), tuple(warnings)
 
 
@@ -648,7 +661,7 @@ def _universe_members_mode(frame: pd.DataFrame, universe_as_of_date: date) -> st
         return "empty"
     if frame["in_date"].nunique() == 1 and frame["in_date"].iloc[0] == universe_as_of_date:
         return "current_snapshot"
-    return "historical"
+    return "historical_pit"
 
 
 def _ensure_non_empty(frames: Mapping[str, pd.DataFrame]) -> None:
@@ -668,20 +681,12 @@ def _write_frames(
 ) -> dict[str, int]:
     connection = connect(db_path)
     try:
-        _fail_on_overlapping_sources(
-            connection,
-            source_tag=source_tag,
-            index_code=index_code,
-            start_date=start_date,
-            end_date=end_date,
-            frames=frames,
-        )
         connection.execute("BEGIN TRANSACTION")
         try:
-            _replace_trading_calendar(connection, frames["trading_calendar"], start_date, end_date)
-            _replace_securities(connection, frames["securities"])
+            _replace_trading_calendar(connection, frames["trading_calendar"], source_tag, start_date, end_date)
+            _replace_securities(connection, frames["securities"], source_tag)
             _replace_universe_members(connection, frames["universe_members"], source_tag, index_code)
-            _replace_daily_prices(connection, frames["daily_prices"], start_date, end_date)
+            _replace_daily_prices(connection, frames["daily_prices"], source_tag, start_date, end_date)
             _replace_valuation_daily(connection, frames["valuation_daily"], source_tag, start_date, end_date)
             row_counts = _readback_counts(
                 connection,
@@ -700,71 +705,39 @@ def _write_frames(
     return row_counts
 
 
-def _fail_on_overlapping_sources(
-    connection: duckdb.DuckDBPyConnection,
-    *,
-    source_tag: str,
-    index_code: str,
-    start_date: date,
-    end_date: date,
-    frames: Mapping[str, pd.DataFrame],
-) -> None:
-    stock_codes = frames["daily_prices"]["stock_code"].drop_duplicates().tolist()
-    if not stock_codes:
-        return
-    connection.register("_phase1a7_codes", pd.DataFrame({"stock_code": stock_codes}))
-    try:
-        valuation_sources = connection.execute(
-            """
-            SELECT DISTINCT source
-            FROM valuation_daily
-            WHERE source <> ?
-              AND trade_date BETWEEN ? AND ?
-              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
-            """,
-            [source_tag, start_date, end_date],
-        ).fetchall()
-        universe_sources = connection.execute(
-            """
-            SELECT DISTINCT source
-            FROM universe_members
-            WHERE source <> ?
-              AND index_code = ?
-              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
-            """,
-            [source_tag, index_code],
-        ).fetchall()
-    finally:
-        connection.unregister("_phase1a7_codes")
-
-    sources = sorted({row[0] for row in valuation_sources + universe_sources})
-    if sources:
-        joined = ", ".join(str(source) for source in sources)
-        raise ValueError(
-            "Detected overlapping rows from different source tags "
-            f"({joined}). Use a separate DB for fixture and real ingest."
-        )
-
-
 def _replace_trading_calendar(
     connection: duckdb.DuckDBPyConnection,
     frame: pd.DataFrame,
+    source_tag: str,
     start_date: date,
     end_date: date,
 ) -> None:
     connection.execute(
-        "DELETE FROM trading_calendar WHERE trade_date BETWEEN ? AND ?",
-        [start_date, end_date],
+        """
+        DELETE FROM trading_calendar
+        WHERE source = ?
+          AND trade_date BETWEEN ? AND ?
+        """,
+        [source_tag, start_date, end_date],
     )
     _insert_frame(connection, "trading_calendar", frame)
 
 
-def _replace_securities(connection: duckdb.DuckDBPyConnection, frame: pd.DataFrame) -> None:
+def _replace_securities(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pd.DataFrame,
+    source_tag: str,
+) -> None:
     codes = frame[["stock_code"]].drop_duplicates()
     connection.register("_phase1a7_codes", codes)
     try:
         connection.execute(
-            "DELETE FROM securities WHERE stock_code IN (SELECT stock_code FROM _phase1a7_codes)"
+            """
+            DELETE FROM securities
+            WHERE source = ?
+              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
+            """,
+            [source_tag],
         )
     finally:
         connection.unregister("_phase1a7_codes")
@@ -783,7 +756,7 @@ def _replace_universe_members(
         connection.execute(
             """
             DELETE FROM universe_members
-            WHERE source = ?
+            WHERE source_tag = ?
               AND index_code = ?
               AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
             """,
@@ -797,6 +770,7 @@ def _replace_universe_members(
 def _replace_daily_prices(
     connection: duckdb.DuckDBPyConnection,
     frame: pd.DataFrame,
+    source_tag: str,
     start_date: date,
     end_date: date,
 ) -> None:
@@ -806,10 +780,11 @@ def _replace_daily_prices(
         connection.execute(
             """
             DELETE FROM daily_prices
-            WHERE trade_date BETWEEN ? AND ?
+            WHERE source = ?
+              AND trade_date BETWEEN ? AND ?
               AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
             """,
-            [start_date, end_date],
+            [source_tag, start_date, end_date],
         )
     finally:
         connection.unregister("_phase1a7_codes")
@@ -872,21 +847,29 @@ def _readback_counts(
     try:
         counts = {
             "trading_calendar": connection.execute(
-                "SELECT COUNT(*) FROM trading_calendar WHERE trade_date BETWEEN ? AND ?",
-                [start_date, end_date],
+                """
+                SELECT COUNT(*)
+                FROM trading_calendar
+                WHERE source = ?
+                  AND trade_date BETWEEN ? AND ?
+                """,
+                [source_tag, start_date, end_date],
             ).fetchone()[0],
             "securities": connection.execute(
                 """
                 SELECT COUNT(*)
                 FROM securities
-                WHERE stock_code IN (SELECT stock_code FROM _phase1a7_expected_codes)
+                WHERE source = ?
+                  AND stock_code IN (SELECT stock_code FROM _phase1a7_expected_codes)
                 """
+                ,
+                [source_tag],
             ).fetchone()[0],
             "universe_members": connection.execute(
                 """
                 SELECT COUNT(*)
                 FROM universe_members
-                WHERE source = ?
+                WHERE source_tag = ?
                   AND index_code = ?
                   AND stock_code IN (SELECT stock_code FROM _phase1a7_expected_codes)
                 """,
@@ -896,10 +879,11 @@ def _readback_counts(
                 """
                 SELECT COUNT(*)
                 FROM daily_prices
-                WHERE trade_date BETWEEN ? AND ?
+                WHERE source = ?
+                  AND trade_date BETWEEN ? AND ?
                   AND stock_code IN (SELECT stock_code FROM _phase1a7_expected_codes)
                 """,
-                [start_date, end_date],
+                [source_tag, start_date, end_date],
             ).fetchone()[0],
             "valuation_daily": connection.execute(
                 """

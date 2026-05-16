@@ -4,9 +4,11 @@ from pathlib import Path
 
 import duckdb
 
-
-CURRENT_SCHEMA_VERSION = 3
-CURRENT_SCHEMA_DESCRIPTION = "phase 5 run audit and artifact index"
+from ashare.storage.migrator import (
+    CURRENT_SCHEMA_DESCRIPTION,
+    CURRENT_SCHEMA_VERSION,
+    apply_migrations,
+)
 
 REQUIRED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "securities": (
@@ -54,104 +56,27 @@ def default_schema_path() -> Path:
 
 
 def init_db(db_path: str | Path, schema_path: str | Path | None = None) -> None:
-    """Initialize a DuckDB database from the bundled schema."""
-    resolved_schema_path = Path(schema_path) if schema_path is not None else default_schema_path()
-    schema_sql = resolved_schema_path.read_text(encoding="utf-8")
-
+    """Initialize or upgrade a DuckDB database with repo-local migrations."""
     connection = connect(db_path)
     try:
-        try:
-            connection.execute(schema_sql)
-        except duckdb.Error as exc:
-            if "JSON" not in str(exc).upper():
-                raise
-            connection.execute("INSTALL json;")
-            connection.execute("LOAD json;")
-            connection.execute(schema_sql)
-        ensure_schema_columns(connection)
+        if schema_path is not None:
+            schema_sql = Path(schema_path).read_text(encoding="utf-8")
+            try:
+                connection.execute(schema_sql)
+            except duckdb.Error as exc:
+                if "JSON" not in str(exc).upper():
+                    raise
+                connection.execute("INSTALL json;")
+                connection.execute("LOAD json;")
+                connection.execute(schema_sql)
+        apply_migrations(connection)
     finally:
         connection.close()
 
 
 def ensure_schema_columns(connection: duckdb.DuckDBPyConnection) -> None:
-    """Add Phase 1a-3.5 schema columns to older DuckDB files without data loss."""
-    for table_name, columns in REQUIRED_COLUMNS.items():
-        existing_columns = _existing_columns(connection, table_name)
-        for column_name, column_type in columns:
-            if column_name not in existing_columns:
-                connection.execute(
-                    f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-                )
-                existing_columns.add(column_name)
-
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER,
-            applied_at TIMESTAMP,
-            description VARCHAR
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS research_runs (
-            run_id VARCHAR,
-            as_of_date DATE,
-            status VARCHAR,
-            params JSON,
-            config_hash VARCHAR,
-            data_snapshot_id VARCHAR,
-            git_sha VARCHAR,
-            worktree_clean BOOLEAN,
-            started_at TIMESTAMP,
-            finished_at TIMESTAMP,
-            error VARCHAR
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS research_artifacts (
-            artifact_id VARCHAR,
-            run_id VARCHAR,
-            artifact_kind VARCHAR,
-            role VARCHAR,
-            path VARCHAR,
-            media_type VARCHAR,
-            sha256 VARCHAR,
-            row_count BIGINT,
-            size_bytes BIGINT,
-            created_at TIMESTAMP,
-            metadata_json JSON
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS research_run_inputs (
-            input_id VARCHAR,
-            run_id VARCHAR,
-            input_kind VARCHAR,
-            input_ref VARCHAR,
-            source_run_id VARCHAR,
-            sha256 VARCHAR,
-            row_count BIGINT,
-            metadata_json JSON,
-            created_at TIMESTAMP
-        )
-        """
-    )
-    connection.execute(
-        """
-        INSERT INTO schema_version (version, applied_at, description)
-        SELECT ?, CURRENT_TIMESTAMP, ?
-        WHERE NOT EXISTS (
-            SELECT 1 FROM schema_version WHERE version = ?
-        )
-        """,
-        [CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_DESCRIPTION, CURRENT_SCHEMA_VERSION],
-    )
+    """Upgrade older DuckDB files without data loss."""
+    apply_migrations(connection)
 
 
 def _existing_columns(connection: duckdb.DuckDBPyConnection, table_name: str) -> set[str]:

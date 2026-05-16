@@ -197,6 +197,7 @@ def test_scan_candidates_lower_is_better_sort_and_default_factor_order(
 
 
 def test_scan_candidates_rejects_duplicate_keys(scan_connection: duckdb.DuckDBPyConnection) -> None:
+    scan_connection.execute("DROP INDEX idx_factor_values_unique_key")
     duplicate_rows = []
     for index in range(6):
         duplicate_rows.extend(

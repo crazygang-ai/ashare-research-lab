@@ -8,6 +8,12 @@ describes the assumptions in human-readable form.
 
 - The strategy ranks the PIT universe by one explicit `sort_factor`.
 - The input signal source is `factor_values` for an explicit `source_run_id`.
+- Phase 8 backtests also read `factor_run_universe` for the explicit universe
+  denominator and snapshot fingerprint when it is available; formal historical
+  backtests require `universe_kind = historical_pit`.
+- Price, valuation, security, and trading-calendar reads are source-isolated by
+  the selected `data_source` / `source_tag`; a shared DuckDB with multiple
+  sources must pass `--data-source` explicitly.
 - The signal date is the final open trading day of each month in the requested
   interval.
 - The portfolio selects the Top N stocks that pass the hard filters and have a
@@ -20,13 +26,18 @@ describes the assumptions in human-readable form.
 ## PIT Input Rules
 
 - Signal reads require `source_run_id`, `trade_date = signal_date`, and
-  `as_of_date <= signal_date`.
+  `as_of_date <= signal_date`; universe membership comes from the matching
+  `factor_run_universe` snapshot when present.
 - If multiple visible versions exist for the same stock and factor, the latest
   `as_of_date` is used.
 - Duplicate rows at that latest `as_of_date` fail fast instead of being silently
-  deduplicated.
+  deduplicated. Phase 8 adds migration preflight checks and a DuckDB unique
+  index over `(source_run_id, stock_code, trade_date, as_of_date, factor_name)`.
 - `sort_factor` direction is read from `configs/data_dictionary.yaml`.
 - Boolean hard-filter factors cannot be used as the `sort_factor`.
+- Backtest runs are audited in `research_runs`, `research_run_inputs`,
+  `research_artifacts`, and `run_manifest.json`; reports remain file artifacts,
+  but their inputs and output files are indexed after Phase 5.
 
 ## Execution Timing
 
@@ -120,5 +131,5 @@ return for that day and reduce reported coverage.
 - No board-lot constraint, partial fill, order-book depth, volume constraint,
   impact-cost model, shorting, leverage, parameter search, or walk-forward
   optimization is implemented.
-- Backtest results are file artifacts only; this phase does not write
-  `research_runs`.
+- Backtest runs write audit metadata and artifact indexes, but detailed
+  backtest result tables are still not persisted in DuckDB.

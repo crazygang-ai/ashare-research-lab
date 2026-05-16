@@ -145,7 +145,15 @@ def test_run_yearly_stability_uses_total_score_as_synthetic_factor() -> None:
     connection.execute(default_schema_path().read_text(encoding="utf-8"))
     try:
         for day in [date(2026, 1, 1), date(2026, 1, 2), date(2026, 2, 1), date(2026, 2, 2)]:
-            connection.execute("INSERT INTO trading_calendar VALUES (?, true, NULL, NULL)", [day])
+                connection.execute(
+                    """
+                    INSERT INTO trading_calendar (
+                        trade_date, is_open, prev_trade_date, next_trade_date
+                    )
+                    VALUES (?, true, NULL, NULL)
+                    """,
+                    [day],
+                )
         for stock in ["A", "B"]:
             connection.execute(
                 """

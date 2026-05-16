@@ -119,6 +119,7 @@ def run_yearly_stability(
     data_dictionary: Mapping[str, object],
     validation_gate: ValidationGateResult,
     horizons: Sequence[int],
+    data_source: str | None = None,
 ) -> pd.DataFrame:
     """Validate total_score as a synthetic factor by calendar year."""
     start = parse_as_of_date(start_date)
@@ -143,6 +144,7 @@ def run_yearly_stability(
                 data_dictionary=data_dictionary,
                 validation_gate=validation_gate,
                 top_n=1_000_000,
+                data_source=data_source,
             )
         except (ValueError, duckdb.Error) as exc:
             warnings_by_year.setdefault(signal_date.year, []).append(

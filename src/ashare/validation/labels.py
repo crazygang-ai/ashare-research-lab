@@ -26,6 +26,7 @@ def build_forward_return_labels(
     connection: duckdb.DuckDBPyConnection,
     signal_dates: Sequence[DateLike],
     horizons: Sequence[int],
+    data_source: str | None = None,
 ) -> pd.DataFrame:
     """Build close-to-close future return labels for given signal dates and horizons."""
     parsed_signal_dates = sorted({parse_as_of_date(value) for value in signal_dates})
@@ -35,13 +36,13 @@ def build_forward_return_labels(
     if any(horizon <= 0 for horizon in parsed_horizons):
         raise ValueError("horizons must be positive integers.")
 
-    open_dates = _open_trading_dates(connection)
+    open_dates = _open_trading_dates(connection, data_source=data_source)
     target_map = _target_date_map(parsed_signal_dates, parsed_horizons, open_dates)
     if target_map.empty:
         return _empty_labels()
 
     price_dates = set(target_map["trade_date"]).union(target_map["target_trade_date"])
-    prices = _daily_prices(connection, min(price_dates), max(price_dates))
+    prices = _daily_prices(connection, min(price_dates), max(price_dates), data_source=data_source)
     prices = prices[prices["trade_date"].isin(price_dates)].copy()
     if prices.empty:
         return _empty_labels()
@@ -75,15 +76,21 @@ def build_forward_return_labels(
     return labels.sort_values(["trade_date", "horizon", "stock_code"]).reset_index(drop=True)
 
 
-def _open_trading_dates(connection: duckdb.DuckDBPyConnection) -> list[date]:
-    rows = connection.execute(
-        """
+def _open_trading_dates(
+    connection: duckdb.DuckDBPyConnection,
+    data_source: str | None = None,
+) -> list[date]:
+    sql = """
         SELECT trade_date
         FROM trading_calendar
         WHERE is_open = true
-        ORDER BY trade_date
-        """
-    ).fetchall()
+    """
+    params: list[object] = []
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    sql += " ORDER BY trade_date"
+    rows = connection.execute(sql, params).fetchall()
     return [_to_date(row[0]) for row in rows]
 
 
@@ -112,15 +119,18 @@ def _daily_prices(
     connection: duckdb.DuckDBPyConnection,
     start_date: date,
     end_date: date,
+    data_source: str | None = None,
 ) -> pd.DataFrame:
-    prices = connection.execute(
-        """
+    sql = """
         SELECT stock_code, trade_date, close, adj_factor
         FROM daily_prices
         WHERE trade_date BETWEEN ? AND ?
-        """,
-        [start_date, end_date],
-    ).df()
+    """
+    params: list[object] = [start_date, end_date]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    prices = connection.execute(sql, params).df()
     if prices.empty:
         return prices
     prices["trade_date"] = pd.to_datetime(prices["trade_date"]).dt.date

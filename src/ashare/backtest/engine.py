@@ -106,6 +106,7 @@ def run_topn_equal_weight_backtest(
     initial_cash: float = 1_000_000,
     backtest_config: Mapping[str, object] | None = None,
     data_dictionary: Mapping[str, object] | None = None,
+    data_source: str | None = None,
 ) -> BacktestResult:
     """Run a monthly Top N equal-weight backtest from stored factor signals."""
     start = parse_as_of_date(start_date)
@@ -134,7 +135,7 @@ def run_topn_equal_weight_backtest(
     benchmark_config = _section(config, "benchmark")
 
     warnings: list[str] = []
-    trading_dates = open_trading_dates_between(connection, start, end)
+    trading_dates = open_trading_dates_between(connection, start, end, data_source=data_source)
     if not trading_dates:
         raise ValueError("No open trading dates found in the requested backtest interval.")
 
@@ -147,6 +148,7 @@ def run_topn_equal_weight_backtest(
         index_code=index_code,
         top_n=top_n,
         data_dictionary=dictionary,
+        data_source=data_source,
         warnings=warnings,
     )
     if not schedules:
@@ -196,6 +198,7 @@ def run_topn_equal_weight_backtest(
                 nav_before_trade=nav_before_trade,
                 cost_config=cost_config,
                 trading_rules=trading_rules,
+                data_source=data_source,
             )
             day_trade_frames.append(ledger)
             rebalance_rows.append(
@@ -213,6 +216,7 @@ def run_topn_equal_weight_backtest(
                 execution_date=trade_date,
                 current_positions=positions,
                 cash=cash,
+                data_source=data_source,
             )
             if not ledger.empty:
                 day_trade_frames.append(ledger)
@@ -230,6 +234,7 @@ def run_topn_equal_weight_backtest(
             trade_date=trade_date,
             positions=positions,
             last_close=last_close,
+            data_source=data_source,
         )
         warnings.extend(price_warnings)
         nav = cash + position_value
@@ -287,6 +292,7 @@ def run_topn_equal_weight_backtest(
         signal_dates=[item.signal_date for item in schedules],
         benchmark_config=benchmark_config,
         initial_nav=1.0,
+        data_source=data_source,
     )
     warnings.extend(benchmark_warnings)
 
@@ -306,6 +312,7 @@ def run_topn_equal_weight_backtest(
         top_n=top_n,
         initial_cash=initial_cash,
         config=config,
+        data_source=data_source,
     )
     return BacktestResult(
         equity_curve=equity_curve,
@@ -330,11 +337,12 @@ def _build_rebalance_schedule(
     index_code: str,
     top_n: int,
     data_dictionary: Mapping[str, object],
+    data_source: str | None,
     warnings: list[str],
 ) -> list[_ScheduledRebalance]:
     schedules: list[_ScheduledRebalance] = []
-    for signal_date in get_month_end_signal_dates(connection, start, end):
-        execution_date = next_open_trading_date(connection, signal_date)
+    for signal_date in get_month_end_signal_dates(connection, start, end, data_source=data_source):
+        execution_date = next_open_trading_date(connection, signal_date, data_source=data_source)
         if execution_date is None:
             warnings.append(
                 f"Signal date {signal_date.isoformat()} skipped: execution_date does not exist."
@@ -360,6 +368,7 @@ def _build_rebalance_schedule(
             index_code=index_code,
             top_n=top_n,
             data_dictionary=data_dictionary,
+            data_source=data_source,
         )
         schedules.append(
             _ScheduledRebalance(
@@ -416,11 +425,12 @@ def _mark_to_market(
     trade_date: date,
     positions: pd.DataFrame,
     last_close: dict[str, float],
+    data_source: str | None,
 ) -> tuple[pd.DataFrame, list[dict[str, object]], float, list[str]]:
     if positions.empty:
         return positions, [], 0.0, []
 
-    prices = _close_prices(connection, trade_date)
+    prices = _close_prices(connection, trade_date, data_source=data_source)
     holding_rows: list[dict[str, object]] = []
     warnings: list[str] = []
     updated = positions.copy()
@@ -458,16 +468,22 @@ def _mark_to_market(
     return updated, holding_rows, float(position_value), warnings
 
 
-def _close_prices(connection: duckdb.DuckDBPyConnection, trade_date: date) -> dict[str, float]:
-    frame = connection.execute(
-        """
+def _close_prices(
+    connection: duckdb.DuckDBPyConnection,
+    trade_date: date,
+    data_source: str | None,
+) -> dict[str, float]:
+    sql = """
         SELECT stock_code, close
         FROM daily_prices
         WHERE trade_date = ?
-        ORDER BY stock_code
-        """,
-        [trade_date],
-    ).df()
+    """
+    params: list[object] = [trade_date]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    sql += " ORDER BY stock_code"
+    frame = connection.execute(sql, params).df()
     result: dict[str, float] = {}
     for row in frame.itertuples(index=False):
         if pd.notna(row.close) and float(row.close) > 0:
@@ -485,6 +501,7 @@ def _assumptions(
     top_n: int,
     initial_cash: float,
     config: Mapping[str, object],
+    data_source: str | None,
 ) -> pd.DataFrame:
     costs = _section(config, "costs")
     trading_rules = _section(config, "trading_rules")
@@ -506,6 +523,7 @@ def _assumptions(
         "slippage_bps": costs.get("slippage_bps", 5.0),
         "sort_factor": sort_factor,
         "source_run_id": source_run_id,
+        "data_source": data_source,
         "stamp_tax_bps": costs.get("stamp_tax_bps", 10.0),
         "start_date": start.isoformat(),
         "top_n": top_n,

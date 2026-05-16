@@ -10,6 +10,18 @@
 - 部分解决: D22 的完整日报缺口已形成可用闭环；日报仍只汇总显式传入的既有产物，不在日报命令内重算因子、评分、回测或事件研究。
 - 仍保留: 正式生产数据管线、真实历史指数成分库、timestamp 级 PIT、更多财务质量和软风险因子、生产部署 / RBAC / durable scheduler、自动交易 / OMS / 审批流和券商接口仍不在 Phase 7 内完成。
 
+## Phase 8 更新
+
+- 已解决: D2 增加 `factor_values` migration 预检、DuckDB unique index 与写入层 fail-fast 共同治理；重复键会在旧库升级或写入时明确失败。
+- 已解决: D5 建立 `src/ashare/storage/migrations/` 与 `schema_version` 连续版本记录；`init_db` 会按序幂等应用 migration。
+- 已解决: D13 增加最小 GitHub Actions CI，覆盖 Conda 环境、editable install、data dictionary 生成和 `pytest -q`。
+- 已解决: D15 的 `data/raw` 与 `data/snapshots` `.gitkeep` 已存在，不再作为待办债务保留。
+- 已解决: D16 增加 `factor_run_universe`，`calculate-factors` 写入显式 universe 分母，验证、评分、回测和日报 gate 优先使用该快照。
+- 已解决: D23 为 `daily_prices`、`securities`、`trading_calendar` 增加 `source` 隔离，真实 pilot 的 bounded replace 限定在同一 source / source_tag 内。
+- 已解决: D24 增加 `ingest-index-members` CSV / Parquet 入口，可导入 historical PIT 成分并标记 `current_snapshot`。
+- 已解决: D26 增加 AkShare capability check、字段映射版本、基础重试 / 限速和可分类 provider 错误。
+- 仍保留: timestamp 级 PIT、验证 / 回测 / 评分明细结果表、生产级查询筛选、商业级历史成分源、公告真实源、监控告警和多用户权限仍不在 Phase 8 内完成。
+
 ## Phase 6 更新
 
 - 已解决: `ashare event-study` 已支持 `announcements`、`risk_events` 和 `announcement_llm_results` 三类 PIT 事件样本，输出事件样本、窗口收益、聚合统计、Markdown 报告，并接入 `research_runs`、`research_run_inputs`、`research_artifacts` 与 `run_manifest.json`。
@@ -19,7 +31,7 @@
 ## Phase 5 更新
 
 - 已解决: D32、D38、D43、D44 的 MVP 审计缺口。`calculate-factors`、`report`、`scan`、`score`、`backtest`、`validate-factors` 和 `parse-announcements` 已接入 `research_runs`、`research_artifacts`、`research_run_inputs` 与 `run_manifest.json`；服务层优先读取 artifact index，并保留文件扫描 fallback。
-- 部分解决: D2 已在应用写入路径实现默认 fail-fast 和显式 `--overwrite-run` 治理，但 DuckDB schema 仍未增加物理唯一键；D16 已增加 `source_run_id` 级输入指纹和表 metadata fingerprint，但仍未保存完整 universe 快照；D18 已持久化验证报告 run 与文件索引，但未新增因子验证结果明细表。
+- 部分解决: D18 已持久化验证报告 run 与文件索引，但未新增因子验证结果明细表；Phase 8 已补齐 D2 物理唯一治理与 D16 显式 universe 快照。
 - 仍保留: D1、D19、D22、D24、D33、D39、D45-D55 等超出 Phase 5 范围的生产化、事件研究、真实数据源、timestamp 级 PIT、完整日报和权限部署能力。
 
 ## 高优先
@@ -31,11 +43,11 @@
 - 决策: 短期继续保持 date 级 PIT 口径并在报告中披露；待真实公告 / 财报数据接入或盘中运行需求明确时，统一决策是否引入 timestamp 级可见性、同日交易可用规则和历史数据回填口径。
 - 关联: Plan 第 7 节 Point-in-Time 规则；Phase 2 公告解析。
 
-### D2. factor_values 无唯一键
+### D2. factor_values 唯一键治理已落地，仍需长期监控
 
-- 现状: `src/ashare/storage/schema.sql` 中 `factor_values` 仍没有 `(stock_code, trade_date, factor_name, as_of_date, source_run_id)` 或等价 PRIMARY KEY；Phase 5 已在 `src/ashare/factors/store.py` 的写入路径实现默认重复键 fail-fast，并要求 CLI 通过显式 `--overwrite-run` 才能替换同一 `source_run_id`。
+- 现状: Phase 8 已在 migration 中增加 `idx_factor_values_unique_key` 等价治理，不依赖 DuckDB `PRIMARY KEY` 语法；升级前检查 `(source_run_id, stock_code, trade_date, as_of_date, factor_name)` 重复键；`src/ashare/factors/store.py` 仍保留写入层 fail-fast 与显式 `--overwrite-run` 治理。
 - 触发: 当重复运行同一批因子并写入同一数据库时，重复行会污染单因子验证、候选清单排序、回测输入和审计追踪。
-- 决策: Phase 5 先采用应用层治理，错误信息最多打印 5 个重复键样例；后续如果 DuckDB 迁移策略稳定，再补物理唯一键或 upsert 语义。
+- 决策: 当前采用 migration 预检、DuckDB unique index 和应用层治理的组合；后续只在需要跨库 merge 或 upsert 语义时再扩展冲突处理策略。
 - 关联: Phase 1a-4 因子写入路径；Phase 1a-5 单因子验证输入检查；Phase 1a-6 候选扫描输入检查；Phase 5 run audit。
 
 ### D3. fundamental 同期基准与 trading_calendar 起点的张力
@@ -52,11 +64,11 @@
 - 决策: 后续 phase 如需区分，应新增独立 `data_missing` 字段，不改变当前 `is_suspended` 的不可交易语义。
 - 关联: Plan 第 9 节与 `configs/data_dictionary.yaml`。
 
-### D5. schema_version 已开始演进但仍不是完整 migration 机制
+### D5. 最小 migration 机制已落地，仍非生产级回滚体系
 
-- 现状: Phase 5 已将 `CURRENT_SCHEMA_VERSION` 推进到 3，并通过 `CREATE TABLE IF NOT EXISTS` 与 `ensure_schema_columns` 为旧库补建 `research_artifacts`、`research_run_inputs` 等审计表；但仍没有真实迁移序列、逐步升级脚本、版本间校验、回滚策略或回填审计流程。
+- 现状: Phase 8 已新增 `src/ashare/storage/migrations/0001_initial.sql` 到 `0004_source_isolation_and_factor_keys.sql` 的迁移序列，`init_db` 会幂等应用 migration 并在 `schema_version` 记录连续版本；旧库升级会对重复 `factor_values` fail-fast。
 - 触发: 一旦继续变更表结构、补唯一键、拆分 JSON 字段或回填历史公告 / 解析数据，缺少明确 migration 记录会使本地数据库状态不可审计。
-- 决策: 短期保留最小兼容补表 / 补列方式；待 schema 继续演进前建立显式 migration 序列和 schema 变更校验流程。
+- 决策: 当前 migration 覆盖本地 DuckDB 无损升级和关键约束校验；schema 演进仍不提供自动回滚、在线迁移、备份编排或历史大规模回填审计。
 - 关联: `src/ashare/storage/schema.sql`；`src/ashare/storage/db.py`；Phase 2 公告与 LLM 解析表。
 
 ### D6. ingest_local 是清表重写，不能用于真实数据
@@ -66,11 +78,11 @@
 - 决策: Phase 1a-7 已新增独立的 `src/ashare/ingest/real_pilot.py` 真实数据试点路径，不复用 `ingest_local` 的清表重写语义；`ingest_local` 继续保持 fixture-only，后续真实数据正式化时再设计完整增量 / upsert 机制。
 - 关联: Phase 1a-2 / 1a-3 ingest 设计；Phase 1a-7 real data ingest pilot。
 
-### D16. factor_values 缺少显式验证 universe 快照
+### D16. factor_values 显式 universe 快照已落地，仍未持久化验证明细
 
-- 现状: `factor_values` 只保存已写出的因子值，没有保存每个 `source_run_id` / `trade_date` 的完整 universe；Phase 5 已在 `research_run_inputs` 中记录 `factor_values` 的 `source_run_id`、row count、日期范围和 metadata fingerprint，但这不是完整 universe 快照。
+- 现状: Phase 8 新增 `factor_run_universe`，`calculate-factors` 为每个 `source_run_id` / `trade_date` 写入完整 universe、`source_tag`、`universe_kind` 和 fingerprint；验证、评分、回测和日报 gate 会优先使用该快照。
 - 触发: 当 hard filter 未完整写入、局部因子重算、跨 run 比较或正式报告要求精确覆盖率时，推断分母可能高估覆盖率或掩盖 universe 变化。
-- 决策: Phase 5 的输入指纹只能回答“本次 run 消费了哪个来源批次及其 metadata”；后续仍应引入显式 universe 快照或验证输入快照。
+- 决策: 覆盖率分母不再只能从 hard filter 或因子行推断；后续如需数据库内长期查询 IC / coverage 历史，仍需另建验证结果明细表。
 - 关联: Phase 1a-5 覆盖率与缺失率口径；Plan 第 6 节 `factor_values`。
 
 ### D17. 单因子 forward_return 是统计标签，不是可执行收益
@@ -103,11 +115,11 @@
 - 决策: 后续改为从 fixture builder 暴露的样本索引或查询结果推导关键日期。
 - 关联: Phase 1a-3.5 PIT 测试。
 
-### D13. 无 CI 配置
+### D13. 最小 CI 已落地，仍未覆盖 lint / type check
 
-- 现状: 仓库没有 GitHub Actions 或等价 CI 配置来自动运行安装、生成文档与 pytest。
+- 现状: Phase 8 已增加 GitHub Actions，运行 Conda 环境创建、`python -m pip install -e .`、`python docs/build_data_dictionary.py` 和 `pytest -q`。
 - 触发: 多人协作、长期分支开发或单因子验证统计继续扩展后，未运行验收命令的提交可能进入主线并造成产物漂移。
-- 决策: 待项目进入持续迭代阶段后增加最小 CI，至少覆盖 `pip install -e .`、文档生成和 `pytest -q`。
+- 决策: CI 先保护核心离线行为，不默认触发真实 AkShare 网络 smoke；后续再补 ruff、mypy、coverage 或更细的 artifact drift 检查。
 - 关联: Plan 第 20 节测试要求。
 
 ### D18. 单因子验证结果未持久化
@@ -138,25 +150,25 @@
 - 决策: 保持 `scan` 作为单因子 Top N 研究入口；多因子综合排序使用 Phase 3 `score`，行业中性化另按 D41 单独设计。
 - 关联: Plan 第 10 节因子标准化；Plan 第 14 节打分层设计；Phase 1a-6 scan 约束；Phase 3 综合评分。
 
-### D22. candidate report 与 plan 第 15 节每日研究报告仍有差距
+### D22. 日报已形成可用闭环，但不重算上游研究
 
-- 现状: Phase 1a-6 只输出最小候选清单、因子分项、入选原因和规则风险提示；Phase 3 已新增独立综合评分报告，但仍没有把公告摘要、上一交易日新增 / 移出 / 排名变化、相对强弱、综合评分变化或完整单股研究信息汇总成 plan 第 15 节定义的每日研究报告。
+- 现状: Phase 7 已有 `ashare daily-report`，能汇总显式 `scan`、`scoring`、`backtest`、`event_study` 与可选 `factor_validation` artifacts，并输出日报、候选、变动和 data quality gate；日报命令只汇总显式 artifacts，不在命令内重算因子、评分、回测或事件研究。
 - 触发: 当需要正式每日研究报告或研究员日常复盘时，当前候选报告和评分报告仍是分散产物，不能替代完整日报。
-- 决策: 后续在公告、LLM、组合跟踪、评分变化和排名变化能力稳定后补齐每日研究报告；短期保持 `scan` 与 `score` 各自独立输出。
+- 决策: 保持日报作为审计汇总层；后续增强应先让上游 run 显式产出所需 artifacts，再由日报读取，避免隐式重算造成复现口径不清。
 - 关联: Plan 第 15 节报告生成；Phase 1a-6 候选清单；Phase 3 综合评分。
 
-### D23. daily_prices / securities / trading_calendar 缺少 source 字段
+### D23. 核心行情表已增加 source 隔离，仍缺正式快照层
 
-- 现状: `daily_prices`、`securities`、`trading_calendar` 没有 `source` 字段，Phase 1a-7 只能按日期或股票代码做 bounded replace，无法在表内完全隔离 fixture、AkShare 与 CSV fallback。
+- 现状: Phase 8 已为 `daily_prices`、`securities`、`trading_calendar` 增加 `source` 字段，并让 real pilot / fixture ingest 按 source 写入和 bounded replace；as-of、因子、验证、评分、回测和日报 gate 可显式传入 `--data-source`。
 - 触发: 当同一 DuckDB 同时写入 fixture ingest 与真实数据 ingest 时，缺少 source 的表可能被不可审计地覆盖。
-- 决策: Phase 1a-7 不修改 schema，只在 CLI 检测明显混源场景并要求使用单独 DB；后续统一评估是否补 source 或设计正式数据快照层。
+- 决策: 当前先采用表内 source 隔离；后续若需要强复现、跨供应商冲突管理或生产发布，应补正式数据快照层和来源优先级。
 - 关联: Phase 1a-7 real data ingest pilot；Plan 第 6 节核心数据表。
 
-### D24. 历史沪深 300 PIT 成分库尚未落地
+### D24. 历史沪深 300 PIT 成分导入入口已落地，可靠数据源仍需外部提供
 
-- 现状: Phase 1a-7 优先沪深 300，但免费真实源可能只给当前成分快照，无法保证完整历史进入 / 退出日期与披露时间。
+- 现状: Phase 8 增加 `ashare ingest-index-members`，支持 CSV / Parquet 导入 `index_code`、`stock_code`、进入 / 退出日期、披露时间、生效日期、`source` 和 `source_tag`；`current_snapshot` 会显式标记，formal 历史验证和回测要求 `historical_pit`。
 - 触发: 当回测或 as-of 查询需要严格使用历史沪深 300 PIT universe 时，当前快照不能倒推成历史成分。
-- 决策: 本 phase 不伪造历史 PIT 成分；质量报告标明当前快照限制，后续接入可靠历史成分源或自建定期快照。
+- 决策: 仓库提供可审计入口和校验，不伪造商业历史库；后续仍需接入可靠历史成分源或持续自建快照。
 - 关联: Plan 第 6 节指数成分与 Point-in-Time 规则；Phase 1a-7 universe ingest。
 
 ### D25. --max-symbols 只是试点限流
@@ -166,11 +178,11 @@
 - 决策: 后续明确撤除 `--max-symbols`、替换为正式分批 ingest，或把抽样标记提升为数据快照元数据。
 - 关联: Phase 1a-7 CLI；Plan 第 5 节数据层与第 16 节 CLI 运行。
 
-### D26. AkShare provider 仍是试点薄封装
+### D26. AkShare provider 已加固试点能力，仍非生产数据平台
 
-- 现状: `src/ashare/ingest/akshare_provider.py` 只封装 Phase 1a-7 所需的少量 AkShare API，依赖当前接口可用性和字段名映射；没有生产级重试、限速、熔断、字段版本探测或上游 schema 变更告警。
+- 现状: Phase 8 为 `src/ashare/ingest/akshare_provider.py` 增加 capability check、字段映射版本、基础重试 / 限速和可分类 provider 错误；质量报告会记录 capability check 结果，CSV fallback 仍必须显式 opt-in。
 - 触发: 当真实源网络不稳定、AkShare API 改名 / 改字段、接口限流，或需要定期批量接入完整沪深 300 时，当前薄封装可能导致 ingest 失败或质量报告频繁暴露字段缺失。
-- 决策: 后续真实数据路径正式化前，增加 provider capability check、版本化字段映射、重试 / 限速策略，并把 AkShare smoke 结果纳入可审计运行记录；Phase 1a-7 只保留小范围试点。
+- 决策: 当前仍定位为真实数据试跑入口，不承诺生产级 SLA、熔断、全量补数、字段漂移自动修复或多 provider 仲裁。
 - 关联: Phase 1a-7 AkShare provider；Plan 第 21 节免费数据源字段变更风险。
 
 ### D27. 回测暂不处理公司行为现金流
@@ -208,7 +220,7 @@
 - 决策: 本 phase 不实现复杂风格归因和行业归因；后续在组合回测稳定后结合行业分类和风格因子补齐。
 - 关联: Plan 第 12 节回测假设；Plan 第 14 节打分层设计。
 
-### D32. backtest 不写 research_runs，回测产物仅以文件形式保存
+### D32. backtest 审计链路已落地，仍无回测明细结果表
 
 - 现状: Phase 5 已让 `ashare backtest` 写入 `research_runs`、`research_run_inputs`、`research_artifacts` 和 `run_manifest.json`，回测报告 Markdown / CSV 可按 `run_id` 查回。
 - 触发: 当需要跨运行查询回测历史、审计参数、关联 git sha 或统一管理报告索引时，仅靠文件产物不足。
@@ -250,7 +262,7 @@
 - 决策: 后续真实 LLM 接入前，先补可选依赖声明、client contract、超时 / 重试 / 限流 / token budget、结构化输出约束和 smoke test；默认仍保持 fixture 模式可离线验收。
 - 关联: Phase 2 LLM client；Plan 第 13 节 LLM 层设计；Plan 第 21 节风险。
 
-### D38. 综合评分产物暂不写入数据库或 run 索引
+### D38. 综合评分 run 索引已落地，仍无评分明细结果表
 
 - 现状: Phase 5 已让 `ashare score` 写入 `research_runs`、`research_run_inputs`、`research_artifacts` 和 `run_manifest.json`，包括 strict gate 失败路径的审计记录和实际已生成文件索引；仍不新增评分结果明细表。
 - 触发: 当需要跨日期查询历史综合评分、比较不同权重配置、做线上报告检索或统一审计运行状态时，文件目录不足以支撑稳定机器查询。
@@ -285,14 +297,14 @@
 - 决策: 保持权重敏感性作为诊断报告；后续如需权重优化，必须先定义样本外验证、过拟合控制、约束条件和审计输出。
 - 关联: Phase 3 权重敏感性测试；Plan 第 14 节打分层设计；Plan 第 12 节回测假设。
 
-### D43. scoring 尚未接入正式 run 快照和数据版本审计
+### D43. scoring MVP 审计链路已解决，仍缺真实数据快照层
 
 - 现状: Phase 5 已为 scoring 记录 `research_runs`、`config_hash`、`data_snapshot_id`、`git_sha`、`worktree_clean`、`validation-dir` 文件 sha256、`factor_values` metadata fingerprint 和输出 artifact sha256。
 - 触发: 当需要长期复现某次综合评分、比较不同数据版本或把评分报告纳入服务化查询时，仅靠本地文件路径和松散 metadata 不足。
 - 决策: MVP 已解决评分 run 的审计链路；仍不把 metadata fingerprint 误称为完整物理快照，后续如需强复现应补真实数据快照层。
 - 关联: Phase 3 综合评分；D16 显式 universe 快照；D18 单因子验证结果未持久化；D38 综合评分产物暂不写入数据库或 run 索引。
 
-### D44. 服务层暂用文件 artifact registry，未接入正式 research_runs
+### D44. 服务层已读取正式 run/artifact index，仍缺生产级查询能力
 
 - 现状: Phase 5 服务层优先读取 DuckDB 中的 `research_runs` 与 `research_artifacts`，并新增 `/api/v1/runs`、`/api/v1/runs/{run_id}`、`/api/v1/runs/{run_id}/artifacts` 和 `/api/v1/runs/{run_id}/manifest`；DuckDB 缺表或不可用时仍 fallback 到 Phase 4 文件扫描。
 - 触发: 当需要跨运行稳定检索、审计某次报告输入、比较不同数据快照或按 run 状态治理产物时，文件 registry 不足以替代结构化运行记录。
@@ -385,9 +397,9 @@
 - 决策: 暂不接 pre-commit；后续可在 CI 之后补最小 ruff/format hook。
 - 关联: D13。
 
-### D15. data/raw、data/snapshots 是空目录但无 .gitkeep
+### D15. data/raw、data/snapshots .gitkeep 已存在
 
-- 现状: 目录规划中保留 `data/raw` 与 `data/snapshots`，但空目录没有 `.gitkeep`，新 clone 后目录可能不存在。
+- 现状: `data/raw/.gitkeep` 与 `data/snapshots/.gitkeep` 已存在，新 clone 后目录会保留。
 - 触发: 文档、脚本或用户操作假定这些目录已存在时，会出现路径错误或额外手工创建步骤，并影响真实数据快照接入前的 onboarding。
-- 决策: 后续在明确数据目录策略后添加 `.gitkeep` 或让脚本自动创建目录。
+- 决策: 该目录占位问题已解决；后续真实数据快照策略仍应避免提交 DuckDB、cache、报告正文或大体积原始数据。
 - 关联: Plan 第 5 节目录结构。

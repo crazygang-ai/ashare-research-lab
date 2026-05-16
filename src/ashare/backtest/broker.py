@@ -42,14 +42,15 @@ def execute_rebalance(
     nav_before_trade: float,
     cost_config: Mapping[str, object],
     trading_rules: Mapping[str, object],
+    data_source: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     """Execute one rebalance at the T+1 open, selling before buying."""
     parsed_signal_date = parse_as_of_date(signal_date)
     parsed_execution_date = parse_as_of_date(execution_date)
     positions = _normalize_positions(current_positions)
     target_map = _target_notional_map(target_weights, nav_before_trade)
-    prices = _execution_prices(connection, parsed_execution_date)
-    delisted = _delisted_status(connection, parsed_execution_date)
+    prices = _execution_prices(connection, parsed_execution_date, data_source=data_source)
+    delisted = _delisted_status(connection, parsed_execution_date, data_source=data_source)
 
     slippage_bps = _float(cost_config, "slippage_bps", 5.0)
     tolerance = _float(trading_rules, "price_compare_tolerance", 0.000001)
@@ -137,11 +138,12 @@ def force_delist_exits(
     execution_date: DateLike,
     current_positions: pd.DataFrame,
     cash: float,
+    data_source: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     """Force out positions whose delist state is PIT-visible on a daily mark date."""
     parsed_execution_date = parse_as_of_date(execution_date)
     positions = _normalize_positions(current_positions)
-    delisted = _delisted_status(connection, parsed_execution_date)
+    delisted = _delisted_status(connection, parsed_execution_date, data_source=data_source)
     positions, rows, cash_after = _force_delist_exits(
         positions=positions,
         signal_date=parsed_execution_date,
@@ -332,16 +334,19 @@ def _force_delist_exits(
 def _execution_prices(
     connection: duckdb.DuckDBPyConnection,
     execution_date: date,
+    data_source: str | None = None,
 ) -> dict[str, dict[str, object]]:
-    frame = connection.execute(
-        """
+    sql = """
         SELECT stock_code, open, is_suspended, limit_up, limit_down
         FROM daily_prices
         WHERE trade_date = ?
-        ORDER BY stock_code
-        """,
-        [execution_date],
-    ).df()
+    """
+    params: list[object] = [execution_date]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    sql += " ORDER BY stock_code"
+    frame = connection.execute(sql, params).df()
     if frame.empty:
         return {}
     result: dict[str, dict[str, object]] = {}
@@ -358,11 +363,13 @@ def _execution_prices(
 def _delisted_status(
     connection: duckdb.DuckDBPyConnection,
     execution_date: date,
+    data_source: str | None = None,
 ) -> dict[str, bool]:
     securities = query_securities_as_of(
         connection,
         execution_date,
         include_delisted=True,
+        source=data_source,
     )
     if securities.empty or "is_delisted_as_of" not in securities.columns:
         return {}

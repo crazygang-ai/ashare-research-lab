@@ -56,7 +56,26 @@ def test_followups_cover_required_debt_items() -> None:
         "lint hook",
         "data/raw",
         ".gitkeep",
+        "factor_run_universe",
+        "ingest-index-members",
+        "source 隔离",
     ]
 
     missing = [keyword for keyword in required_keywords if keyword not in text]
     assert not missing
+
+
+def test_followups_do_not_keep_phase8_resolved_items_as_open_debt() -> None:
+    text = FOLLOWUPS_PATH.read_text(encoding="utf-8")
+    stale_phrases = [
+        "DuckDB schema 仍未增加物理唯一键",
+        "仍未保存完整 universe 快照",
+        "仓库没有 GitHub Actions",
+        "没有 `.gitkeep`",
+        "daily_prices`、`securities`、`trading_calendar` 没有 `source` 字段",
+        "历史沪深 300 PIT 成分库尚未落地",
+        "AkShare provider 仍是试点薄封装",
+    ]
+
+    stale = [phrase for phrase in stale_phrases if phrase in text]
+    assert not stale

@@ -49,10 +49,11 @@ def calculate_factors_for_date(
     factor_names: Sequence[str] | None = None,
     include_delisted: bool = False,
     factor_config: Mapping[str, object] | None = None,
+    data_source: str | None = None,
 ) -> pd.DataFrame:
     """Calculate Phase 1a-4 factors for one explicit trading ``as_of_date``."""
     parsed_date = parse_as_of_date(as_of_date)
-    _ensure_open_trading_day(connection, parsed_date)
+    _ensure_open_trading_day(connection, parsed_date, data_source=data_source)
     selected_factors = _selected_factors(factor_names)
     config = load_factor_config() if factor_config is None else factor_config
 
@@ -61,16 +62,20 @@ def calculate_factors_for_date(
         as_of_date=parsed_date,
         index_code=index_code,
         include_delisted=include_delisted,
+        data_source=data_source,
     )
     if not universe.stock_codes:
         result = _empty_factor_frame()
         result.attrs["universe_size"] = 0
         result.attrs["as_of_date"] = parsed_date
         result.attrs["factor_names"] = selected_factors
+        result.attrs["universe_frame"] = universe.universe_members
+        result.attrs["data_source"] = data_source
+        result.attrs["index_code"] = index_code
         return result
 
-    daily_prices = query_daily_prices_as_of(connection, parsed_date)
-    valuation_daily = query_valuation_daily_as_of(connection, parsed_date)
+    daily_prices = query_daily_prices_as_of(connection, parsed_date, source=data_source)
+    valuation_daily = query_valuation_daily_as_of(connection, parsed_date, source=data_source)
     st_status = query_st_status_as_of(connection, parsed_date)
     fundamental_reports = query_fundamental_reports_as_of(connection, parsed_date)
 
@@ -111,6 +116,9 @@ def calculate_factors_for_date(
     result.attrs["universe_size"] = len(universe.stock_codes)
     result.attrs["as_of_date"] = parsed_date
     result.attrs["factor_names"] = selected_factors
+    result.attrs["universe_frame"] = universe.universe_members
+    result.attrs["data_source"] = data_source
+    result.attrs["index_code"] = index_code
     return result
 
 
@@ -118,6 +126,7 @@ def open_trading_dates_between(
     connection: duckdb.DuckDBPyConnection,
     start_date: DateLike,
     end_date: DateLike,
+    data_source: str | None = None,
 ) -> list[date]:
     """Return open trading dates in the inclusive range."""
     start = parse_as_of_date(start_date)
@@ -125,36 +134,50 @@ def open_trading_dates_between(
     if start > end:
         raise ValueError(f"--from date {start.isoformat()} is after --to date {end.isoformat()}.")
 
-    rows = connection.execute(
-        """
+    sql = """
         SELECT trade_date
         FROM trading_calendar
         WHERE trade_date BETWEEN ? AND ?
           AND is_open = true
-        ORDER BY trade_date
-        """,
-        [start, end],
-    ).fetchall()
+    """
+    params: list[object] = [start, end]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    sql += " ORDER BY trade_date"
+    rows = connection.execute(sql, params).fetchall()
     return [_to_date(row[0]) for row in rows]
 
 
-def _ensure_open_trading_day(connection: duckdb.DuckDBPyConnection, as_of_date: date) -> None:
-    is_open = connection.execute(
-        """
+def _ensure_open_trading_day(
+    connection: duckdb.DuckDBPyConnection,
+    as_of_date: date,
+    data_source: str | None = None,
+) -> None:
+    sql = """
         SELECT COALESCE(bool_or(is_open), false)
         FROM trading_calendar
         WHERE trade_date = ?
-        """,
-        [as_of_date],
-    ).fetchone()[0]
+    """
+    params: list[object] = [as_of_date]
+    if data_source is not None:
+        sql += " AND source = ?"
+        params.append(data_source)
+    is_open = connection.execute(sql, params).fetchone()[0]
     if not bool(is_open):
         raise ValueError(f"{as_of_date.isoformat()} is not a trading day.")
 
 
 class _Universe:
-    def __init__(self, stock_codes: tuple[str, ...], securities: pd.DataFrame) -> None:
+    def __init__(
+        self,
+        stock_codes: tuple[str, ...],
+        securities: pd.DataFrame,
+        universe_members: pd.DataFrame,
+    ) -> None:
         self.stock_codes = stock_codes
         self.securities = securities
+        self.universe_members = universe_members
 
 
 def _calculation_universe(
@@ -162,11 +185,13 @@ def _calculation_universe(
     as_of_date: date,
     index_code: str | None,
     include_delisted: bool,
+    data_source: str | None,
 ) -> _Universe:
     all_securities = query_securities_as_of(
         connection,
         as_of_date,
         include_delisted=True,
+        source=data_source,
     )
     all_securities = _normalize_date_columns(all_securities, ["list_date", "delist_date"])
 
@@ -175,6 +200,7 @@ def _calculation_universe(
             connection,
             as_of_date,
             index_code=index_code,
+            source_tag=None if data_source == "legacy" else data_source,
         )
         stock_codes = sorted(universe_members["stock_code"].dropna().unique().tolist())
         if not include_delisted and stock_codes:
@@ -185,11 +211,16 @@ def _calculation_universe(
             connection,
             as_of_date,
             include_delisted=include_delisted,
+            source=data_source,
         )
         stock_codes = sorted(securities["stock_code"].dropna().unique().tolist())
+        universe_members = securities.loc[:, ["stock_code", "source"]].copy()
+        universe_members["index_code"] = index_code
+        universe_members["source_tag"] = data_source
+        universe_members["universe_kind"] = "all_listed_securities"
 
     securities_for_universe = all_securities[all_securities["stock_code"].isin(stock_codes)].copy()
-    return _Universe(tuple(stock_codes), securities_for_universe)
+    return _Universe(tuple(stock_codes), securities_for_universe, universe_members)
 
 
 def _delisted_codes(securities: pd.DataFrame) -> set[str]:

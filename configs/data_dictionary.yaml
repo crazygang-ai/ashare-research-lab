@@ -32,9 +32,21 @@ schema_fields:
   factor_values.source_run_id:
     type: column
     source: factor_values
-    description: "产生该因子值的 research_runs.run_id；当前 phase 尚不强制唯一键。"
+    description: "产生该因子值的 research_runs.run_id；Phase 8 通过 migration 级重复检查、DuckDB unique index 与写入层 fail-fast 治理 `(source_run_id, stock_code, trade_date, as_of_date, factor_name)` 唯一性。"
     unit: identifier
     pit_visibility: "metadata written after a calculation run"
+  factor_run_universe.stock_code:
+    type: column
+    source: factor_run_universe
+    description: "因子计算 run 在该 trade_date / as_of_date 使用的显式 universe 成员，用作验证、评分、回测和日报 gate 的覆盖率分母。"
+    unit: identifier
+    pit_visibility: "written together with the factor source_run_id"
+  factor_run_universe.universe_kind:
+    type: column
+    source: factor_run_universe
+    description: "显式 universe 的来源类别；formal 历史验证和回测要求 historical_pit，current_snapshot 只能用于试点或探索。"
+    unit: category
+    pit_visibility: "metadata written together with factor_run_universe rows"
   fundamental_reports.effective_date:
     type: column
     source: fundamental_reports

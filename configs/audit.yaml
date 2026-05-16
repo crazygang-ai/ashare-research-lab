@@ -31,4 +31,4 @@ daily_report:
     min_hard_filter_coverage: 0.8
     allow_missing_announcements: true
     allow_missing_risk_events: true
-    required_schema_version: 3
+    required_schema_version: 4

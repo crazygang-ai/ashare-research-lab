@@ -19,7 +19,9 @@ REQUIRED_TABLES = {
     "research_runs",
     "research_artifacts",
     "research_run_inputs",
+    "factor_run_universe",
     "schema_version",
+    "provider_smoke_checks",
     "announcement_parse_runs",
     "announcement_llm_results",
     "announcement_llm_evidence",
@@ -69,7 +71,12 @@ def test_init_db_creates_duckdb_file_and_required_tables(tmp_path: Path) -> None
 
     assert db_path.is_file()
     assert REQUIRED_TABLES.issubset(_tables(db_path))
-    assert _schema_version_rows(db_path) == [(3, "phase 5 run audit and artifact index")]
+    assert _schema_version_rows(db_path) == [
+        (1, "initial research schema"),
+        (2, "PIT effective-date compatibility columns"),
+        (3, "run audit and artifact index"),
+        (4, "source isolation, factor value keys, and universe snapshots"),
+    ]
 
 
 def test_schema_sql_executes_directly_in_duckdb() -> None:
@@ -97,12 +104,23 @@ def test_schema_sql_executes_directly_in_duckdb() -> None:
                 """
             ).fetchall()
         }
+        daily_price_columns = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'daily_prices'
+                """
+            ).fetchall()
+        }
     finally:
         connection.close()
 
     assert REQUIRED_TABLES.issubset(tables)
     assert {"delist_publish_time", "delist_effective_date"}.issubset(securities_columns)
     assert {"source", "source_tag"}.issubset(announcement_columns)
+    assert "source" in daily_price_columns
 
 
 def test_init_db_is_idempotent(tmp_path: Path) -> None:
@@ -112,7 +130,7 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     init_db(db_path)
 
     assert REQUIRED_TABLES.issubset(_tables(db_path))
-    assert _schema_version_rows(db_path) == [(3, "phase 5 run audit and artifact index")]
+    assert [row[0] for row in _schema_version_rows(db_path)] == [1, 2, 3, 4]
 
 
 def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(
@@ -213,6 +231,7 @@ def test_init_db_backfills_phase_1a_3_5_columns_without_losing_old_data(
     assert {"delist_publish_time", "delist_effective_date"}.issubset(
         _columns(db_path, "securities")
     )
+    assert {"source"}.issubset(_columns(db_path, "daily_prices"))
     for table in ["universe_members", "industry_classifications", "st_status"]:
         assert {
             "in_publish_time",

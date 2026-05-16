@@ -67,7 +67,10 @@ def test_universe_selection_uses_index_members_or_pit_securities(
 ) -> None:
     connection.execute(
         """
-        INSERT INTO securities
+        INSERT INTO securities (
+            stock_code, stock_name, exchange, list_date,
+            delist_date, delist_publish_time, delist_effective_date
+        )
         VALUES ('000099.SZ', 'Off Index', 'SZSE', DATE '2020-01-01', NULL, NULL, NULL)
         """
     )

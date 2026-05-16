@@ -18,7 +18,7 @@ def _build_backtest_db(db_path: Path) -> None:
     connection = duckdb.connect(str(db_path))
     connection.execute(default_schema_path().read_text(encoding="utf-8"))
     connection.executemany(
-        "INSERT INTO trading_calendar (trade_date, is_open) VALUES (?, true)",
+        "INSERT INTO trading_calendar (trade_date, is_open, source) VALUES (?, true, 'fixture')",
         [
             (date(2026, 1, 30),),
             (date(2026, 2, 2),),
@@ -29,8 +29,8 @@ def _build_backtest_db(db_path: Path) -> None:
     for stock_code, name in [("A", "Alpha"), ("B", "Beta")]:
         connection.execute(
             """
-            INSERT INTO securities (stock_code, stock_name, exchange, list_date)
-            VALUES (?, ?, 'SSE', '2020-01-01')
+            INSERT INTO securities (stock_code, stock_name, exchange, list_date, source)
+            VALUES (?, ?, 'SSE', '2020-01-01', 'fixture')
             """,
             [stock_code, name],
         )
@@ -54,9 +54,9 @@ def _build_backtest_db(db_path: Path) -> None:
         """
         INSERT INTO daily_prices (
             stock_code, trade_date, open, high, low, close, volume, amount,
-            adj_factor, is_suspended, limit_up, limit_down
+            adj_factor, is_suspended, limit_up, limit_down, source
         )
-        VALUES (?, ?, ?, ?, ?, ?, 1000, 10000, 1, false, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 1000, 10000, 1, false, ?, ?, 'fixture')
         """,
         [
             (code, trade_date, close, close, close, close, close * 1.1, close * 0.9)

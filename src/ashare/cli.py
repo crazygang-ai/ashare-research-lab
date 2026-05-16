@@ -31,6 +31,7 @@ from ashare.fixtures.builder import build_fixtures as build_fixture_csvs
 from ashare.ingest.akshare_provider import AkShareProvider
 from ashare.ingest.announcements import ingest_announcements as ingest_announcement_csvs
 from ashare.ingest.csv_fallback import CsvFallbackProvider
+from ashare.ingest.index_members import import_index_members
 from ashare.ingest.local import ingest_local as ingest_local_csvs
 from ashare.ingest.real_pilot import ingest_real_pilot
 from ashare.llm.parser import parse_announcements as parse_announcement_rows
@@ -71,6 +72,12 @@ from ashare.scoring.diagnostics import (
 from ashare.scoring.scorer import compute_composite_scores
 from ashare.scoring.validation_gate import evaluate_validation_gate, load_validation_artifacts
 from ashare.storage.db import default_schema_path, init_db
+from ashare.storage.source import resolve_data_source
+from ashare.storage.universe_snapshots import (
+    delete_factor_run_universe_for_source_run,
+    factor_run_universe_fingerprint,
+    write_factor_run_universe,
+)
 from ashare.validation.config import load_validation_config, merge_validation_config
 from ashare.validation.event_study import BENCHMARKS, DEDUPLICATION_MODES, EVENT_SOURCES, run_event_study
 from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
@@ -355,6 +362,63 @@ def _print_factor_counts(counts: dict[str, int]) -> None:
         typer.echo(f"  {factor_name}: {counts.get(factor_name, 0)}")
 
 
+def _write_factor_universe_snapshot(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    source_run_id: str,
+    factors: pd.DataFrame,
+    index_code: str | None,
+    data_source: str | None,
+) -> int:
+    as_of_value = factors.attrs.get("as_of_date")
+    parsed_as_of = parse_as_of_date(as_of_value) if as_of_value is not None else None
+    if parsed_as_of is None:
+        return 0
+    universe_frame = factors.attrs.get("universe_frame")
+    if not isinstance(universe_frame, pd.DataFrame):
+        universe_frame = pd.DataFrame(columns=["index_code", "stock_code"])
+    return write_factor_run_universe(
+        connection,
+        source_run_id=source_run_id,
+        trade_date=parsed_as_of,
+        as_of_date=parsed_as_of,
+        index_code=index_code,
+        universe=universe_frame,
+        data_source=data_source,
+    )
+
+
+def _require_historical_pit_universe(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    source_run_id: str,
+    index_code: str | None,
+    command: str,
+) -> None:
+    params: list[object] = [source_run_id]
+    sql = """
+        SELECT COALESCE(universe_kind, 'unknown') AS universe_kind, COUNT(*)
+        FROM factor_run_universe
+        WHERE source_run_id = ?
+    """
+    if index_code is not None:
+        sql += " AND index_code = ?"
+        params.append(index_code)
+    sql += " GROUP BY COALESCE(universe_kind, 'unknown') ORDER BY universe_kind"
+    rows = connection.execute(sql, params).fetchall()
+    if not rows:
+        raise click.ClickException(
+            f"{command} formal mode requires factor_run_universe snapshots; rerun "
+            "calculate-factors with Phase 8 schema before formal use."
+        )
+    bad = [f"{row[0]}={row[1]}" for row in rows if str(row[0]) != "historical_pit"]
+    if bad:
+        raise click.ClickException(
+            f"{command} formal mode requires historical PIT universe snapshots; "
+            "found " + ", ".join(bad)
+        )
+
+
 def _parse_horizon_option(value: str | None) -> list[int] | None:
     if value is None:
         return None
@@ -592,6 +656,33 @@ def ingest_announcements(
     typer.echo(f"overwritten_rows: {result.overwritten_rows}")
 
 
+@app.command(name="ingest-index-members")
+def ingest_index_members(
+    input_path: Path = typer.Option(..., "--input-path"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    universe_kind: str = typer.Option("historical_pit", "--universe-kind"),
+    overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite"),
+) -> None:
+    """Import audited historical PIT index membership CSV/Parquet."""
+    try:
+        result = import_index_members(
+            input_path=input_path,
+            db_path=db_path,
+            universe_kind=universe_kind,
+            overwrite=overwrite,
+        )
+    except (OSError, ValueError, duckdb.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo("Index member import completed.")
+    typer.echo(f"Database path: {result.db_path}")
+    typer.echo(f"input_path: {result.input_path}")
+    typer.echo(f"row_count: {result.row_count}")
+    typer.echo(f"index_codes: {', '.join(result.index_codes)}")
+    typer.echo(f"source_tags: {', '.join(result.source_tags)}")
+    typer.echo(f"universe_kind: {result.universe_kind}")
+
+
 @app.command(name="parse-announcements")
 def parse_announcements(
     db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
@@ -718,6 +809,8 @@ def validate_factors(
     n_groups: int | None = typer.Option(None, "--n-groups"),
     validation_config: Path = typer.Option(Path("configs/validation.yaml"), "--validation-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    index_code: str | None = typer.Option(None, "--index-code"),
+    data_source: str | None = typer.Option(None, "--data-source"),
     run_id: str | None = typer.Option(None, "--run-id"),
     run_mode: str | None = typer.Option(None, "--run-mode"),
     overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
@@ -758,6 +851,8 @@ def validate_factors(
             "n_groups": n_groups,
             "validation_config": str(validation_config),
             "data_dictionary": str(data_dictionary),
+            "index_code": index_code,
+            "data_source": data_source,
             "include_hard_filters": include_hard_filters,
             "verbose": verbose,
         },
@@ -765,6 +860,11 @@ def validate_factors(
     )
     connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
     try:
+        try:
+            resolved_data_source = resolve_data_source(connection, data_source)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        actual_run_mode = _actual_run_mode(context, run_mode, audit_config)
         try:
             result = run_factor_validation(
                 connection=connection,
@@ -775,6 +875,10 @@ def validate_factors(
                 include_hard_filters=include_hard_filters,
                 validation_config=merged_config,
                 data_dictionary=loaded_dictionary,
+                index_code=index_code,
+                data_source=resolved_data_source,
+                require_universe_snapshot=actual_run_mode == "formal",
+                require_historical_pit_universe=actual_run_mode == "formal",
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
@@ -782,6 +886,11 @@ def validate_factors(
             "factor_values",
             source_run_id=source_run_id,
             predicate=f"source_run_id={source_run_id}; {from_}..{to}",
+        )
+        context.add_duckdb_table_input(
+            "factor_run_universe",
+            source_run_id=source_run_id,
+            predicate=f"source_run_id={source_run_id}; index_code={index_code}",
         )
     except click.ClickException as exc:
         _fail_audit(context, exc)
@@ -803,6 +912,9 @@ def validate_factors(
     typer.echo(f"Database path: {db_path}")
     typer.echo(f"Validation interval: {from_} to {to}")
     typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
+    if index_code is not None:
+        typer.echo(f"index_code: {index_code}")
     typer.echo(f"factors: {factors}")
     typer.echo(f"horizons: {horizons}")
     typer.echo(f"n_groups: {merged_config['n_groups']}")
@@ -1255,6 +1367,7 @@ def score(
     validation_dir: Path = typer.Option(..., "--validation-dir"),
     scoring_config: Path = typer.Option(Path("configs/scoring.yaml"), "--scoring-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    data_source: str | None = typer.Option(None, "--data-source"),
     top: int | None = typer.Option(None, "--top"),
     diagnostics_from: str | None = typer.Option(None, "--diagnostics-from"),
     diagnostics_to: str | None = typer.Option(None, "--diagnostics-to"),
@@ -1301,6 +1414,7 @@ def score(
             "index_code": index_code,
             "scoring_config_path": str(scoring_config),
             "data_dictionary_path": str(data_dictionary),
+            "data_source": data_source,
             "validation_dir": str(validation_dir),
             "config_hash": _file_sha256(scoring_config),
             "top_n": resolved_top,
@@ -1341,11 +1455,24 @@ def score(
             "horizon": horizon,
             "skip_diagnostics": skip_diagnostics,
             "overwrite": overwrite,
+            "data_source": data_source,
         },
         config_paths=[scoring_config, data_dictionary],
         artifact_input_paths=_artifact_input_files(validation_dir),
     )
     context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
+    connection_for_source = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    close_source_connection = not isinstance(context, AuditContext)
+    try:
+        resolved_data_source = resolve_data_source(connection_for_source, data_source)
+    except ValueError as exc:
+        if close_source_connection:
+            connection_for_source.close()
+        _fail_audit(context, exc)
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        if close_source_connection:
+            connection_for_source.close()
 
     gate_failures = gate_result.table[
         (gate_result.table["configured_enabled"].astype(bool))
@@ -1388,6 +1515,7 @@ def score(
                 data_dictionary=loaded_dictionary,
                 validation_gate=gate_result,
                 top_n=resolved_top,
+                data_source=resolved_data_source,
             )
             run_warnings = list(result.warnings)
             if skip_diagnostics:
@@ -1411,6 +1539,7 @@ def score(
                         data_dictionary=loaded_dictionary,
                         validation_gate=gate_result,
                         horizons=horizons,
+                        data_source=resolved_data_source,
                     )
                 else:
                     yearly_stability = pd.DataFrame(columns=YEARLY_STABILITY_COLUMNS)
@@ -1419,6 +1548,12 @@ def score(
                     )
 
             metadata["warnings"] = list(dict.fromkeys([*gate_result.warnings, *run_warnings]))
+            metadata["data_source"] = resolved_data_source
+            metadata["universe_fingerprint"] = factor_run_universe_fingerprint(
+                connection,
+                source_run_id=source_run_id,
+                index_code=index_code,
+            )
             paths = write_scoring_report(
                 result=result,
                 output_dir=_resolve_output_dir(output_dir, context),
@@ -1442,6 +1577,7 @@ def score(
     typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
     typer.echo(f"source_run_id: {source_run_id}")
     typer.echo(f"index_code: {index_code}")
+    typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
     typer.echo(f"top_n: {resolved_top}")
     validation_counts = result.validation_gate["validation_status"].value_counts().to_dict()
     typer.echo("validation_gate_summary:")
@@ -1468,6 +1604,7 @@ def backtest(
     initial_cash: float | None = typer.Option(None, "--initial-cash"),
     backtest_config: Path = typer.Option(Path("configs/backtest.yaml"), "--backtest-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    data_source: str | None = typer.Option(None, "--data-source"),
     output_dir: Path | None = typer.Option(None, "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
     run_id: str | None = typer.Option(None, "--run-id"),
@@ -1518,12 +1655,24 @@ def backtest(
             "initial_cash": initial_cash,
             "backtest_config": str(backtest_config),
             "data_dictionary": str(data_dictionary),
+            "data_source": data_source,
             "overwrite": overwrite,
         },
         config_paths=[backtest_config, data_dictionary],
     )
     connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
     try:
+        try:
+            resolved_data_source = resolve_data_source(connection, data_source)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if _actual_run_mode(context, run_mode, audit_config) == "formal":
+            _require_historical_pit_universe(
+                connection,
+                source_run_id=source_run_id,
+                index_code=index_code,
+                command="backtest",
+            )
         try:
             result = run_topn_equal_weight_backtest(
                 connection=connection,
@@ -1536,13 +1685,20 @@ def backtest(
                 initial_cash=resolved_initial_cash,
                 backtest_config=merged_config,
                 data_dictionary=loaded_dictionary,
+                data_source=resolved_data_source,
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
         context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
-        context.add_duckdb_table_input("daily_prices", predicate=f"{from_}..{to}")
+        context.add_duckdb_table_input("factor_run_universe", source_run_id=source_run_id)
+        context.add_duckdb_table_input("daily_prices", predicate=f"{from_}..{to}; source={resolved_data_source}")
         context.add_duckdb_table_input("universe_members", predicate=f"index_code={index_code}")
-        context.add_duckdb_table_input("valuation_daily", predicate=f"{from_}..{to}")
+        context.add_duckdb_table_input("valuation_daily", predicate=f"{from_}..{to}; source={resolved_data_source}")
+        universe_fingerprint = factor_run_universe_fingerprint(
+            connection,
+            source_run_id=source_run_id,
+            index_code=index_code,
+        )
     except click.ClickException as exc:
         _fail_audit(context, exc)
         raise
@@ -1562,6 +1718,8 @@ def backtest(
         "initial_cash": resolved_initial_cash,
         "backtest_config_path": str(backtest_config),
         "data_dictionary_path": str(data_dictionary),
+        "data_source": resolved_data_source,
+        "universe_fingerprint": universe_fingerprint,
     }
     try:
         paths = write_backtest_report(
@@ -1580,6 +1738,7 @@ def backtest(
     typer.echo(f"Backtest interval: {from_} to {to}")
     typer.echo(f"source_run_id: {source_run_id}")
     typer.echo(f"index_code: {index_code}")
+    typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
     typer.echo(f"sort_factor: {sort_factor}")
     typer.echo(f"top_n: {resolved_top}")
     metrics = result.metrics.iloc[0].to_dict() if not result.metrics.empty else {}
@@ -1751,6 +1910,7 @@ def daily_report(
     compare_scan_run_id: str | None = typer.Option(None, "--compare-scan-run-id"),
     compare_score_run_id: str | None = typer.Option(None, "--compare-score-run-id"),
     index_code: str | None = typer.Option(None, "--index-code"),
+    data_source: str | None = typer.Option(None, "--data-source"),
     top: int = typer.Option(20, "--top"),
     recent_days: int = typer.Option(30, "--recent-days"),
     allow_latest_artifacts: bool = typer.Option(
@@ -1809,6 +1969,7 @@ def daily_report(
             "compare_scan_run_id": compare_scan_run_id,
             "compare_score_run_id": compare_score_run_id,
             "index_code": index_code,
+            "data_source": data_source,
             "top": top,
             "recent_days": recent_days,
             "allow_latest_artifacts": allow_latest_artifacts,
@@ -1828,6 +1989,10 @@ def daily_report(
     close_connection = not isinstance(context, AuditContext)
     try:
         repo_root = audit_conf.repo_root
+        try:
+            resolved_data_source = resolve_data_source(connection, data_source)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         scan_bundle = load_artifact_bundle(
             connection,
             kind="scan",
@@ -1933,14 +2098,24 @@ def daily_report(
         resolved_index_code = index_code or (
             str(score_metadata["index_code"]) if score_metadata.get("index_code") else None
         )
-        context.add_duckdb_table_input("trading_calendar", predicate=f"trade_date={as_of}")
-        context.add_duckdb_table_input("daily_prices", predicate=f"trade_date={as_of}")
-        context.add_duckdb_table_input("valuation_daily", predicate=f"trade_date={as_of}")
+        context.add_duckdb_table_input(
+            "trading_calendar",
+            predicate=f"trade_date={as_of}; source={resolved_data_source}",
+        )
+        context.add_duckdb_table_input(
+            "daily_prices",
+            predicate=f"trade_date={as_of}; source={resolved_data_source}",
+        )
+        context.add_duckdb_table_input(
+            "valuation_daily",
+            predicate=f"trade_date={as_of}; source={resolved_data_source}",
+        )
         context.add_duckdb_table_input(
             "factor_values",
             source_run_id=source_run_id,
             predicate=f"source_run_id={source_run_id}; as_of_date={as_of}",
         )
+        context.add_duckdb_table_input("factor_run_universe", source_run_id=source_run_id)
         context.add_duckdb_table_input("universe_members", predicate=f"index_code={resolved_index_code}")
         context.add_duckdb_table_input("announcements", predicate=f"effective_date<={as_of}")
         context.add_duckdb_table_input("risk_events", predicate=f"effective_date<={as_of}")
@@ -1972,6 +2147,7 @@ def daily_report(
             config_paths=[audit_config, service_config, Path("configs/data_dictionary.yaml")],
             repo_root=repo_root,
             index_code=resolved_index_code,
+            data_source=resolved_data_source,
             gate_config=gate_config,
         )
         gate_paths = write_data_quality_gate(
@@ -1981,6 +2157,7 @@ def daily_report(
                 "run_id": resolved_run_id,
                 "run_mode": actual_run_mode,
                 "db_path": str(db_path),
+                "data_source": resolved_data_source,
             },
             overwrite=overwrite or overwrite_run,
         )
@@ -2014,6 +2191,7 @@ def daily_report(
             "compare_score_run_id": compare_score_bundle.run_id if compare_score_bundle else None,
             "allow_latest_artifacts": allow_latest_artifacts,
             "index_code": resolved_index_code,
+            "data_source": resolved_data_source,
             "top_n": top,
         }
         report = build_daily_report(
@@ -2050,6 +2228,7 @@ def daily_report(
     typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
     typer.echo(f"source_run_id: {source_run_id}")
     typer.echo(f"run_mode: {actual_run_mode}")
+    typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
     for status, count in gate.summary.items():
         typer.echo(f"data_quality_{status}: {count}")
     for key, path in {**gate_paths, **report_paths}.items():
@@ -2328,6 +2507,7 @@ def calculate_factors(
     overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
     audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
     include_delisted: bool = typer.Option(False, "--include-delisted"),
+    data_source: str | None = typer.Option(None, "--data-source"),
     replace: bool = typer.Option(False, "--replace/--append"),
 ) -> None:
     """Calculate and store Phase 1a-4 factors. Range output prints per-date universe sizes."""
@@ -2374,11 +2554,16 @@ def calculate_factors(
             "factor": factor,
             "factor_config": str(factor_config),
             "include_delisted": include_delisted,
+            "data_source": data_source,
         },
         config_paths=[factor_config],
     )
     connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path))
     try:
+        try:
+            resolved_data_source = resolve_data_source(connection, data_source)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         if has_as_of:
             assert as_of is not None
             try:
@@ -2390,6 +2575,7 @@ def calculate_factors(
                     factor_names=factor,
                     include_delisted=include_delisted,
                     factor_config=parsed_config,
+                    data_source=resolved_data_source,
                 )
             except (TypeError, ValueError) as exc:
                 raise click.ClickException(str(exc)) from exc
@@ -2397,12 +2583,24 @@ def calculate_factors(
             try:
                 if overwrite_run:
                     deleted_rows = delete_factor_values_for_source_run(connection, source_run_id)
+                    deleted_universe_rows = delete_factor_run_universe_for_source_run(
+                        connection,
+                        source_run_id,
+                    )
                     typer.echo(f"overwrite_deleted_factor_rows: {deleted_rows}")
+                    typer.echo(f"overwrite_deleted_universe_rows: {deleted_universe_rows}")
                 written_rows = write_factor_values(
                     connection,
                     factors,
                     source_run_id=source_run_id,
                     replace=False,
+                )
+                universe_rows = _write_factor_universe_snapshot(
+                    connection,
+                    source_run_id=source_run_id,
+                    factors=factors,
+                    index_code=index_code,
+                    data_source=resolved_data_source,
                 )
             except (ValueError, duckdb.Error) as exc:
                 raise click.ClickException(str(exc)) from exc
@@ -2411,10 +2609,17 @@ def calculate_factors(
                 index_code=index_code,
                 predicate=f"as_of={parsed_as_of.isoformat()}",
             )
+            context.add_duckdb_table_input(
+                "factor_run_universe",
+                source_run_id=source_run_id,
+                predicate=f"as_of={parsed_as_of.isoformat()}; data_source={resolved_data_source}",
+            )
             typer.echo(f"Database path: {db_path}")
             typer.echo(f"Date mode: as-of {parsed_as_of.isoformat()}")
             typer.echo(f"source_run_id: {source_run_id}")
+            typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
             typer.echo(f"universe_size: {factors.attrs.get('universe_size', 0)}")
+            typer.echo(f"universe_snapshot_rows: {universe_rows}")
             typer.echo(f"written_rows: {written_rows}")
             _print_factor_counts(_factor_row_counts(factors))
             _succeed_audit(context)
@@ -2424,7 +2629,12 @@ def calculate_factors(
         try:
             start = parse_as_of_date(from_)
             end = parse_as_of_date(to)
-            trading_dates = open_trading_dates_between(connection, start, end)
+            trading_dates = open_trading_dates_between(
+                connection,
+                start,
+                end,
+                data_source=resolved_data_source,
+            )
         except (TypeError, ValueError) as exc:
             raise click.ClickException(str(exc)) from exc
 
@@ -2438,6 +2648,7 @@ def calculate_factors(
                 factor_names=factor,
                 include_delisted=include_delisted,
                 factor_config=parsed_config,
+                data_source=resolved_data_source,
             )
             universe_sizes[trading_date.isoformat()] = int(
                 factors_for_date.attrs.get("universe_size", 0)
@@ -2458,12 +2669,27 @@ def calculate_factors(
         try:
             if overwrite_run:
                 deleted_rows = delete_factor_values_for_source_run(connection, source_run_id)
+                deleted_universe_rows = delete_factor_run_universe_for_source_run(
+                    connection,
+                    source_run_id,
+                )
                 typer.echo(f"overwrite_deleted_factor_rows: {deleted_rows}")
+                typer.echo(f"overwrite_deleted_universe_rows: {deleted_universe_rows}")
             written_rows = write_factor_values(
                 connection,
                 factors,
                 source_run_id=source_run_id,
                 replace=False,
+            )
+            universe_rows = sum(
+                _write_factor_universe_snapshot(
+                    connection,
+                    source_run_id=source_run_id,
+                    factors=factors_for_date,
+                    index_code=index_code,
+                    data_source=resolved_data_source,
+                )
+                for factors_for_date in frames
             )
         except (ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
@@ -2472,10 +2698,16 @@ def calculate_factors(
             index_code=index_code,
             predicate=f"{start.isoformat()}..{end.isoformat()}",
         )
+        context.add_duckdb_table_input(
+            "factor_run_universe",
+            source_run_id=source_run_id,
+            predicate=f"{start.isoformat()}..{end.isoformat()}; data_source={resolved_data_source}",
+        )
 
         typer.echo(f"Database path: {db_path}")
         typer.echo(f"Date mode: range {start.isoformat()} to {end.isoformat()}")
         typer.echo(f"source_run_id: {source_run_id}")
+        typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
         typer.echo("universe_size_by_date:")
         if universe_sizes:
             for trading_date, universe_size in universe_sizes.items():
@@ -2483,6 +2715,7 @@ def calculate_factors(
         else:
             typer.echo("  (no open trading dates)")
         typer.echo(f"written_rows: {written_rows}")
+        typer.echo(f"universe_snapshot_rows: {universe_rows}")
         _print_factor_counts(_factor_row_counts(factors))
         _succeed_audit(context)
     except click.ClickException as exc:
@@ -2501,12 +2734,21 @@ def as_of(
     industry_version: str | None = typer.Option(None, "--industry-version"),
     include_delisted: bool = typer.Option(False, "--include-delisted"),
     stock_code: str | None = typer.Option(None, "--stock-code"),
+    data_source: str | None = typer.Option(None, "--data-source"),
 ) -> None:
     """Print visible PIT row counts and stock-code coverage for one as-of date."""
     try:
         parsed_date = parse_as_of_date(as_of)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--as-of") from exc
+
+    connection = duckdb.connect(str(db_path), read_only=True)
+    try:
+        resolved_data_source = resolve_data_source(connection, data_source)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        connection.close()
 
     snapshot = load_as_of_snapshot(
         db_path=db_path,
@@ -2516,5 +2758,7 @@ def as_of(
         industry_version=industry_version,
         include_delisted=include_delisted,
         stock_code=stock_code,
+        data_source=resolved_data_source,
     )
     _print_as_of_snapshot(snapshot)
+    typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")

@@ -118,6 +118,7 @@ def test_topn_targets_lower_is_better_covers_pe_percentile(
 def test_topn_targets_fail_fast_for_duplicate_latest_as_of(
     signal_connection: duckdb.DuckDBPyConnection,
 ) -> None:
+    signal_connection.execute("DROP INDEX idx_factor_values_unique_key")
     duplicate_rows = [
         ("A", date(2026, 1, 31), "return_20d", 1.0, date(2026, 1, 31), "dup-run"),
         ("A", date(2026, 1, 31), "return_20d", 2.0, date(2026, 1, 31), "dup-run"),
