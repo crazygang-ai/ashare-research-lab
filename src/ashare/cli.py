@@ -34,6 +34,7 @@ from ashare.llm.parser import parse_announcements as parse_announcement_rows
 from ashare.pit.asof import AsOfSnapshot, load_as_of_snapshot, parse_as_of_date
 from ashare.reports.backtest_report import write_backtest_report
 from ashare.reports.candidate_report import write_candidate_report
+from ashare.reports.event_study_report import write_event_study_report
 from ashare.reports.factor_report import write_factor_validation_report
 from ashare.reports.scoring_report import (
     write_scoring_report,
@@ -57,6 +58,7 @@ from ashare.scoring.scorer import compute_composite_scores
 from ashare.scoring.validation_gate import evaluate_validation_gate, load_validation_artifacts
 from ashare.storage.db import default_schema_path, init_db
 from ashare.validation.config import load_validation_config, merge_validation_config
+from ashare.validation.event_study import BENCHMARKS, DEDUPLICATION_MODES, EVENT_SOURCES, run_event_study
 from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
 
 app = typer.Typer(help="A-share research assistant CLI.")
@@ -245,6 +247,20 @@ def _parse_horizon_option(value: str | None) -> list[int] | None:
     if not horizons:
         raise click.ClickException("--horizon must include at least one positive integer.")
     return horizons
+
+
+def _parse_event_type_options(values: list[str] | None) -> list[str]:
+    if not values:
+        raise click.ClickException("--event-type must be explicitly provided.")
+    event_types: list[str] = []
+    for value in values:
+        for item in value.split(","):
+            stripped = item.strip()
+            if stripped and stripped not in event_types:
+                event_types.append(stripped)
+    if not event_types:
+        raise click.ClickException("--event-type must include at least one value.")
+    return event_types
 
 
 def _generated_at() -> str:
@@ -710,13 +726,164 @@ def validate_factors(
 
 @app.command(name="event-study")
 def event_study(
-    event: str = typer.Option(..., "--event"),
-    from_: str | None = typer.Option(None, "--from"),
-    to: str | None = typer.Option(None, "--to"),
-    horizon: str = typer.Option("5,20,60", "--horizon"),
+    db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
+    event_source: str = typer.Option(..., "--event-source"),
+    event_type: list[str] = typer.Option(..., "--event-type"),
+    from_: str = typer.Option(..., "--from"),
+    to: str = typer.Option(..., "--to"),
+    horizon: str = typer.Option(..., "--horizon"),
+    index_code: str | None = typer.Option(None, "--index-code"),
+    benchmark: str = typer.Option("synthetic_equal_weight", "--benchmark"),
+    deduplicate: str = typer.Option("none", "--deduplicate"),
+    min_confidence: float = typer.Option(0.7, "--min-confidence"),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    run_mode: str | None = typer.Option(None, "--run-mode"),
+    overwrite_run: bool = typer.Option(False, "--overwrite-run/--no-overwrite-run"),
+    audit_config: Path = typer.Option(Path("configs/audit.yaml"), "--audit-config"),
 ) -> None:
-    """Print event-study parameters without running an event study."""
-    _echo_todo("event-study", event=event, from_=from_, to=to, horizon=horizon)
+    """Run Phase 6 PIT event-study validation."""
+    resolved_source = event_source.strip()
+    if resolved_source not in EVENT_SOURCES:
+        raise click.ClickException(
+            "--event-source must be one of: " + ", ".join(sorted(EVENT_SOURCES))
+        )
+    if benchmark not in BENCHMARKS:
+        raise click.ClickException("--benchmark must be one of: " + ", ".join(sorted(BENCHMARKS)))
+    if deduplicate not in DEDUPLICATION_MODES:
+        raise click.ClickException(
+            "--deduplicate must be one of: " + ", ".join(sorted(DEDUPLICATION_MODES))
+        )
+    try:
+        horizons = _parse_horizon_option(horizon)
+        if horizons is None:
+            raise click.ClickException("--horizon must be explicitly provided.")
+        event_types = _parse_event_type_options(event_type)
+        parsed_from = parse_as_of_date(from_)
+        parsed_to = parse_as_of_date(to)
+        if parsed_from > parsed_to:
+            raise click.ClickException("--from must be on or before --to.")
+    except click.ClickException:
+        raise
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    resolved_run_id = run_id or generated_run_id("event-study")
+    context = _begin_audit(
+        command="event-study",
+        artifact_kind="event_study",
+        db_path=db_path,
+        run_id=resolved_run_id,
+        run_mode=run_mode,
+        overwrite_run=overwrite_run,
+        audit_config=audit_config,
+        output_dir=output_dir,
+        as_of_date=to,
+        source_run_id=None,
+        params={
+            "event_source": resolved_source,
+            "event_type": event_types,
+            "from": from_,
+            "to": to,
+            "horizon": horizon,
+            "index_code": index_code,
+            "benchmark": benchmark,
+            "deduplicate": deduplicate,
+            "min_confidence": min_confidence,
+            "overwrite": overwrite,
+        },
+    )
+    if isinstance(context, AuditContext):
+        context.close()
+
+    connection = duckdb.connect(str(db_path), read_only=True)
+    connection_closed = False
+    try:
+        try:
+            result = run_event_study(
+                connection=connection,
+                event_source=resolved_source,
+                event_types=event_types,
+                start_date=parsed_from,
+                end_date=parsed_to,
+                horizons=horizons,
+                index_code=index_code,
+                benchmark=benchmark,
+                deduplicate=deduplicate,
+                min_confidence=min_confidence,
+            )
+        except (TypeError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
+    except click.ClickException as exc:
+        connection.close()
+        connection_closed = True
+        _fail_audit(context, exc)
+        raise
+    finally:
+        if not connection_closed:
+            connection.close()
+
+    metadata = {
+        "generated_at": _generated_at(),
+        "db_path": str(db_path),
+        "event_source": resolved_source,
+        "event_types": event_types,
+        "start_date": from_,
+        "end_date": to,
+        "horizons": horizons,
+        "index_code": index_code,
+        "benchmark": benchmark,
+        "deduplicate": deduplicate,
+        "min_confidence": min_confidence,
+    }
+    try:
+        paths = write_event_study_report(
+            result=result,
+            output_dir=_resolve_output_dir(output_dir, context),
+            metadata=metadata,
+            overwrite=overwrite or overwrite_run,
+        )
+        context.add_duckdb_table_input(
+            resolved_source,
+            predicate=f"effective_date {from_}..{to}; event_type={','.join(event_types)}",
+        )
+        if resolved_source == "announcement_llm_results":
+            context.add_duckdb_table_input(
+                "announcements",
+                predicate=f"effective_date {from_}..{to}",
+            )
+        context.add_duckdb_table_input("trading_calendar", predicate="is_open=true")
+        context.add_duckdb_table_input("daily_prices", predicate=f"event windows from {from_}")
+        if benchmark != "none":
+            context.add_duckdb_table_input(
+                "universe_members",
+                predicate=f"index_code={index_code}; as_of_date=event_date",
+            )
+        if benchmark == "synthetic_cap_weight":
+            context.add_duckdb_table_input("valuation_daily", predicate="trade_date=event_date")
+    except (OSError, ValueError, duckdb.Error) as exc:
+        _fail_audit(context, exc)
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo("event-study report is for research validation only and is not a trading instruction.")
+    typer.echo("事件研究报告仅供信号验证，不是组合回测或交易指令。")
+    typer.echo(f"Database path: {db_path}")
+    typer.echo(f"Event interval: {from_} to {to}")
+    typer.echo(f"event_source: {resolved_source}")
+    typer.echo(f"event_types: {', '.join(event_types)}")
+    typer.echo(f"horizons: {', '.join(str(value) for value in horizons)}")
+    typer.echo(f"benchmark: {benchmark}")
+    typer.echo(f"deduplicate: {deduplicate}")
+    typer.echo(f"event_samples: {len(result.event_samples)}")
+    typer.echo(f"event_window_returns: {len(result.event_window_returns)}")
+    if not result.event_summary.empty:
+        _print_frame("event_summary", result.event_summary, verbose=False)
+    for warning in result.warnings:
+        typer.echo(f"WARNING: {warning}")
+    for key, path in paths.items():
+        typer.echo(f"{key}: {path}")
+    _succeed_audit(context, paths)
 
 
 @app.command(name="serve")

@@ -43,6 +43,12 @@ ROLE_BY_KIND_AND_KEY: dict[str, dict[str, str]] = {
         "group_returns": "group_returns_csv",
         "decay_curve": "decay_curve_csv",
     },
+    "event_study": {
+        "markdown": "markdown_report",
+        "event_samples": "event_samples_csv",
+        "event_window_returns": "event_window_returns_csv",
+        "event_summary": "event_summary_csv",
+    },
     "announcement_parse": {
         "summary": "metadata_json",
     },

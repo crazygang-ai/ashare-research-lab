@@ -27,6 +27,12 @@ ARTIFACT_REQUIRED_FILES: dict[str, tuple[str, ...]] = {
         "rank_ic.csv",
         "ic_summary.csv",
     ),
+    "event_study": (
+        "event_study_report.md",
+        "event_samples.csv",
+        "event_window_returns.csv",
+        "event_summary.csv",
+    ),
 }
 
 ARTIFACT_MARKDOWN_FILES = {
@@ -34,6 +40,7 @@ ARTIFACT_MARKDOWN_FILES = {
     "scoring": "scoring_report.md",
     "backtest": "backtest_report.md",
     "factor_validation": "factor_validation_report.md",
+    "event_study": "event_study_report.md",
 }
 
 ARTIFACT_PRIMARY_CSV = {
@@ -41,6 +48,7 @@ ARTIFACT_PRIMARY_CSV = {
     "scoring": "scored_candidates.csv",
     "backtest": "metrics.csv",
     "factor_validation": "ic_summary.csv",
+    "event_study": "event_summary.csv",
 }
 
 

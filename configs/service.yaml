@@ -18,6 +18,7 @@ artifacts:
     - scoring
     - backtest
     - factor_validation
+    - event_study
     - announcement_parse
     - workflow
     - manifest

@@ -2,6 +2,12 @@
 
 本文件登记前置 phase 已识别但当前系列 phase 暂不解决的工程债。D 系列编号来自 phase 1a-4.5 review 中的工程债扫描，保留编号是为了便于后续审计回溯。
 
+## Phase 6 更新
+
+- 已解决: `ashare event-study` 已支持 `announcements`、`risk_events` 和 `announcement_llm_results` 三类 PIT 事件样本，输出事件样本、窗口收益、聚合统计、Markdown 报告，并接入 `research_runs`、`research_run_inputs`、`research_artifacts` 与 `run_manifest.json`。
+- 已解决: 服务 artifact registry 已识别 `event_study` 类型产物，可通过通用 artifact index 查询和读取报告 / CSV。
+- 仍保留: 暂未新增事件研究专用服务 API、分行业事件研究 CSV、真实指数行情基准或事件研究结果持久化明细表；如后续需要在服务内直接查询最新事件研究摘要，应补专用 endpoint 和 schema。
+
 ## Phase 5 更新
 
 - 已解决: D32、D38、D43、D44 的 MVP 审计缺口。`calculate-factors`、`report`、`scan`、`score`、`backtest`、`validate-factors` 和 `parse-announcements` 已接入 `research_runs`、`research_artifacts`、`research_run_inputs` 与 `run_manifest.json`；服务层优先读取 artifact index，并保留文件扫描 fallback。

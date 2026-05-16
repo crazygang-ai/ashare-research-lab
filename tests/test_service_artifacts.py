@@ -21,12 +21,13 @@ def test_artifact_registry_identifies_kinds_and_stable_ids(tmp_path: Path) -> No
     _write_scoring(root / "scoring", generated_at="2026-06-26T18:00:00+08:00")
     _write_backtest(root / "backtest")
     _write_factor_validation(root / "factor-validation")
+    _write_event_study(root / "event-study")
 
     registry = _registry(root)
     records = registry.list_artifacts(limit=20)
     kinds = {record.kind for record in records}
 
-    assert kinds == {"scan", "scoring", "backtest", "factor_validation"}
+    assert kinds == {"scan", "scoring", "backtest", "factor_validation", "event_study"}
     first_scan = registry.latest("scan")
     second_scan = _registry(root).latest("scan")
     assert first_scan is not None
@@ -91,3 +92,20 @@ def _write_factor_validation(path: Path) -> None:
     (path / "coverage.csv").write_text("factor_name,coverage\nreturn_20d,1\n", encoding="utf-8")
     (path / "rank_ic.csv").write_text("factor_name,horizon,rank_ic\nreturn_20d,20,0.1\n", encoding="utf-8")
     (path / "ic_summary.csv").write_text("factor_name,horizon,icir\nreturn_20d,20,1.2\n", encoding="utf-8")
+
+
+def _write_event_study(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "event_study_report.md").write_text("# Event Study\n", encoding="utf-8")
+    (path / "event_samples.csv").write_text(
+        "event_id,stock_code,event_type\nann-1,000001.SZ,earnings_forecast\n",
+        encoding="utf-8",
+    )
+    (path / "event_window_returns.csv").write_text(
+        "event_id,horizon,event_return\nann-1,5,0.1\n",
+        encoding="utf-8",
+    )
+    (path / "event_summary.csv").write_text(
+        "event_type,horizon,sample_count\nearnings_forecast,5,1\n",
+        encoding="utf-8",
+    )

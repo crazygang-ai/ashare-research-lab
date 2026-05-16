@@ -18,6 +18,7 @@ KNOWN_ARTIFACT_KINDS = (
     "scan",
     "scoring",
     "backtest",
+    "event_study",
     "announcement_parse",
     "workflow",
     "manifest",

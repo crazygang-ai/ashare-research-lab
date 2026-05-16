@@ -355,7 +355,10 @@ class AuditContext:
 
     def _require_connection(self) -> duckdb.DuckDBPyConnection:
         if self._connection is None:
-            raise RuntimeError("Audit run has not been started.")
+            if self._begun and self.finished_at is None:
+                self._connection = connect(self.db_path)
+            else:
+                raise RuntimeError("Audit run has not been started.")
         return self._connection
 
     def _display_path(self, path: Path) -> str:
