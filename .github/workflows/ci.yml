@@ -32,5 +32,7 @@ jobs:
         run: git diff --exit-code docs/data_dictionary.md
 
       - name: Test
+        env:
+          _TYPER_FORCE_DISABLE_TERMINAL: "1"
         run: |
           "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab pytest -q
