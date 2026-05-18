@@ -21,13 +21,16 @@ jobs:
           cache-environment: true
 
       - name: Install package
-        run: conda run -n ashare-research-lab python -m pip install -e .
+        run: |
+          "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab python -m pip install -e .
 
       - name: Build data dictionary
-        run: conda run -n ashare-research-lab python docs/build_data_dictionary.py
+        run: |
+          "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab python docs/build_data_dictionary.py
 
       - name: Check generated docs
         run: git diff --exit-code docs/data_dictionary.md
 
       - name: Test
-        run: conda run -n ashare-research-lab pytest -q
+        run: |
+          "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab pytest -q
