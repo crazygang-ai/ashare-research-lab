@@ -36,6 +36,30 @@ def test_normalize_stock_code_and_chinese_daily_price_columns() -> None:
     assert "unexpected" not in frame.columns
 
 
+def test_normalize_dataset_coalesces_duplicate_alias_columns() -> None:
+    frame = normalize_dataset(
+        "universe_members",
+        pd.DataFrame(
+            {
+                "指数代码": ["000300"],
+                "index_code": [pd.NA],
+                "成分券代码": ["002594"],
+                "stock_code": [pd.NA],
+                "纳入日期": ["2026-05-22"],
+                "in_effective_date": ["2026-05-22"],
+                "source": ["akshare"],
+                "source_tag": ["akshare"],
+                "universe_kind": ["current_snapshot"],
+            }
+        ),
+    )
+
+    assert frame.columns.tolist().count("index_code") == 1
+    assert frame.columns.tolist().count("stock_code") == 1
+    assert frame.loc[0, "index_code"] == "000300.SH"
+    assert frame.loc[0, "stock_code"] == "002594.SZ"
+
+
 def test_validate_dataset_missing_required_columns_fails() -> None:
     frame = pd.DataFrame({"stock_code": ["000001.SZ"]})
 

@@ -60,9 +60,15 @@ def _suspended_by_stock(prices: pd.DataFrame, as_of_date: date) -> dict[str, boo
     frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.date
     current = frame[frame["trade_date"] == as_of_date]
     return {
-        row.stock_code: bool(row.is_suspended)
+        row.stock_code: _nullable_bool(row.is_suspended)
         for row in current[["stock_code", "is_suspended"]].itertuples(index=False)
     }
+
+
+def _nullable_bool(value: object) -> bool:
+    if pd.isna(value):
+        return False
+    return bool(value)
 
 
 def _delisted_codes(securities: pd.DataFrame) -> set[str]:

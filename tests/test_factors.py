@@ -247,6 +247,26 @@ def test_is_suspended_covers_true_suspension_and_missing_price_row(
     assert _value(missing_price, "000005.SZ", "is_suspended") == 1.0
 
 
+def test_is_suspended_treats_null_flag_as_not_suspended(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    connection.execute(
+        """
+        UPDATE daily_prices
+        SET is_suspended = NULL
+        WHERE stock_code = '000001.SZ' AND trade_date = DATE '2026-01-05'
+        """
+    )
+
+    factors = calculate_factors_for_date(
+        connection,
+        "2026-01-05",
+        factor_names=["is_suspended"],
+    )
+
+    assert _value(factors, "000001.SZ", "is_suspended") == 0.0
+
+
 def test_is_delisted_respects_publish_effective_and_delist_dates(
     connection: duckdb.DuckDBPyConnection,
 ) -> None:

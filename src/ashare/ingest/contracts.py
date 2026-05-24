@@ -304,6 +304,7 @@ def normalize_dataset(dataset: str, frame: pd.DataFrame) -> pd.DataFrame:
     """Normalize aliases, types, stock codes, and drop contract-external columns."""
     _ensure_known_dataset(dataset)
     normalized = _rename_columns(dataset, frame.copy())
+    normalized = _coalesce_duplicate_columns(normalized)
     expected = DATASET_COLUMNS[dataset]
 
     if dataset == "trading_calendar" and "is_open" not in normalized:
@@ -347,6 +348,19 @@ def normalize_dataset(dataset: str, frame: pd.DataFrame) -> pd.DataFrame:
 
     selected = [column for column in expected if column in normalized]
     return normalized[selected].copy()
+
+
+def _coalesce_duplicate_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.columns.is_unique:
+        return frame
+    result = pd.DataFrame(index=frame.index)
+    for column in dict.fromkeys(frame.columns):
+        selected = frame.loc[:, frame.columns == column]
+        if selected.shape[1] == 1:
+            result[column] = selected.iloc[:, 0]
+        else:
+            result[column] = selected.bfill(axis=1).iloc[:, 0]
+    return result
 
 
 def validate_dataset(
