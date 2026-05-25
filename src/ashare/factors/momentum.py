@@ -1,4 +1,4 @@
-"""Momentum and liquidity factor calculations."""
+"""Price, momentum, risk, and liquidity factor calculations."""
 
 from __future__ import annotations
 
@@ -10,7 +10,15 @@ import pandas as pd
 from ashare.factors.config import factor_params, hard_filter_params
 
 
-MOMENTUM_FACTORS = {"return_20d", "return_60d", "above_ma60", "low_liquidity"}
+MOMENTUM_FACTORS = {
+    "return_20d",
+    "return_60d",
+    "above_ma60",
+    "volatility_20d",
+    "max_drawdown_60d",
+    "amount_cv_20d",
+    "low_liquidity",
+}
 
 
 def calculate_momentum_factors(
@@ -45,6 +53,39 @@ def calculate_momentum_factors(
         params = factor_params(factor_config, "above_ma60")
         rows.extend(
             _above_ma_rows(
+                frame=frame,
+                stock_codes=stock_codes,
+                as_of_date=as_of_date,
+                window=int(params["window_days"]),
+            )
+        )
+
+    if "volatility_20d" in selected:
+        params = factor_params(factor_config, "volatility_20d")
+        rows.extend(
+            _volatility_rows(
+                frame=frame,
+                stock_codes=stock_codes,
+                as_of_date=as_of_date,
+                window=int(params["window_days"]),
+            )
+        )
+
+    if "max_drawdown_60d" in selected:
+        params = factor_params(factor_config, "max_drawdown_60d")
+        rows.extend(
+            _max_drawdown_rows(
+                frame=frame,
+                stock_codes=stock_codes,
+                as_of_date=as_of_date,
+                window=int(params["window_days"]),
+            )
+        )
+
+    if "amount_cv_20d" in selected:
+        params = factor_params(factor_config, "amount_cv_20d")
+        rows.extend(
+            _amount_cv_rows(
                 frame=frame,
                 stock_codes=stock_codes,
                 as_of_date=as_of_date,
@@ -117,6 +158,78 @@ def _above_ma_rows(
             continue
         value = 1.0 if float(row["adjusted_close"]) > float(row["ma"]) else 0.0
         rows.append(_factor_row(stock_code, as_of_date, "above_ma60", value))
+    return rows
+
+
+def _volatility_rows(
+    frame: pd.DataFrame,
+    stock_codes: Sequence[str],
+    as_of_date: date,
+    window: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for stock_code in stock_codes:
+        stock_rows = frame[frame["stock_code"] == stock_code]
+        current = stock_rows[stock_rows["trade_date"] == as_of_date]
+        if current.empty:
+            continue
+        latest = stock_rows[stock_rows["trade_date"] <= as_of_date].tail(window + 1)
+        if len(latest) < window + 1:
+            continue
+        returns = latest["adjusted_close"].pct_change().dropna()
+        if len(returns) < window or returns.isna().any():
+            continue
+        rows.append(_factor_row(stock_code, as_of_date, "volatility_20d", returns.std(ddof=0)))
+    return rows
+
+
+def _max_drawdown_rows(
+    frame: pd.DataFrame,
+    stock_codes: Sequence[str],
+    as_of_date: date,
+    window: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for stock_code in stock_codes:
+        stock_rows = frame[frame["stock_code"] == stock_code]
+        current = stock_rows[stock_rows["trade_date"] == as_of_date]
+        if current.empty:
+            continue
+        latest = stock_rows[stock_rows["trade_date"] <= as_of_date].tail(window)
+        if len(latest) < window or latest["adjusted_close"].isna().any():
+            continue
+        adjusted_close = latest["adjusted_close"].astype(float)
+        if (adjusted_close <= 0).any():
+            continue
+        drawdowns = 1.0 - adjusted_close / adjusted_close.cummax()
+        rows.append(_factor_row(stock_code, as_of_date, "max_drawdown_60d", drawdowns.max()))
+    return rows
+
+
+def _amount_cv_rows(
+    frame: pd.DataFrame,
+    stock_codes: Sequence[str],
+    as_of_date: date,
+    window: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for stock_code in stock_codes:
+        stock_rows = frame[frame["stock_code"] == stock_code]
+        current = stock_rows[stock_rows["trade_date"] == as_of_date]
+        if current.empty:
+            continue
+        latest = stock_rows[stock_rows["trade_date"] <= as_of_date].tail(window)
+        if len(latest) < window:
+            continue
+        amount = pd.to_numeric(latest["amount"], errors="coerce").dropna()
+        if len(amount) < window:
+            continue
+        mean_amount = float(amount.mean())
+        if mean_amount <= 0:
+            continue
+        rows.append(
+            _factor_row(stock_code, as_of_date, "amount_cv_20d", amount.std(ddof=0) / mean_amount)
+        )
     return rows
 
 

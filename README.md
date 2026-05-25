@@ -124,6 +124,7 @@ data/reports/generated/hs300-daily/${ASOF_NODASH}/stock-002594-SZ/
 - AkShare 指数成分是当前快照，不是严格历史 PIT 成分库。
 - `--universe-as-of` 默认等于 ingest 起点；如果早于真实快照日期，本质是当前快照静态回填，有幸存者偏差。
 - 严格历史研究或正式回测需要 `historical_pit` universe。
+- 从当前快照链路升级到 historical PIT 链路时，先按 `docs/historical_pit_universe.md` 导入本地授权 CSV / Parquet，再重新计算因子；仓库不内置真实商业历史成分数据。
 - `candidate list is not a trading instruction`
 - `composite score is not a trading instruction`
 - `factor validation forward return is a statistical label`
@@ -337,7 +338,10 @@ tests/         单元测试、CLI 测试、fixture 测试
 - 报告会写入 `run_manifest.json`，记录配置、输入 artifact、输出文件和 Git 状态。
 - 多数据源共用同一个 DuckDB 时，命令应显式传入 `--data-source` / `--source-tag`。
 - `factor_run_universe` 存在时，验证、扫描、评分、回测优先使用因子运行时的 universe 快照。
-- 严格历史结论需要 `historical_pit` universe；AkShare 当前快照只能支持探索性实验。
+- `universe_kind` 分为 `historical_pit`、`current_snapshot` 和 `unknown_legacy`；data quality gate 会输出 universe kind profile。
+- 严格历史结论需要 `historical_pit` universe；formal validation / formal backtest 遇到 `current_snapshot`、`unknown_legacy` 或缺失 snapshot 会 fail-fast。
+- formal validation / formal backtest 会要求 `factor_run_universe.source_tag` 和 `--data-source` 一致，避免混用不同来源的 universe、行情和估值。
+- AkShare 当前快照只能支持探索性实验，不能替代严肃历史回测。
 
 ## 测试
 

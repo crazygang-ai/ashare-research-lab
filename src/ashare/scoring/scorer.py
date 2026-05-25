@@ -544,7 +544,11 @@ def _enrich_candidates(
             on="stock_code",
             how="left",
         )
-    industries = query_industry_classifications_as_of(connection, as_of_date)
+    industries = query_industry_classifications_as_of(
+        connection,
+        as_of_date,
+        source=data_source,
+    )
     if not industries.empty:
         industries = industries.loc[:, ["stock_code", "industry_l1", "industry_l2"]]
         industries = industries.drop_duplicates("stock_code", keep="first")

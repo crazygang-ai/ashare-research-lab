@@ -11,6 +11,9 @@ describes the assumptions in human-readable form.
 - Phase 8 backtests also read `factor_run_universe` for the explicit universe
   denominator and snapshot fingerprint when it is available; formal historical
   backtests require `universe_kind = historical_pit`.
+- In formal mode, each executable signal date must have matching
+  `factor_run_universe` rows for the requested `source_run_id` and `index_code`;
+  missing snapshots, `current_snapshot`, and `unknown_legacy` fail fast.
 - Price, valuation, security, and trading-calendar reads are source-isolated by
   the selected `data_source` / `source_tag`; a shared DuckDB with multiple
   sources must pass `--data-source` explicitly.
@@ -117,6 +120,10 @@ portfolio and stay static until the next signal date. Market-cap weights prefer
 `valuation_daily.float_mv` and fall back to `total_mv`. Benchmark returns use
 `adjusted_close = close * adj_factor`; missing `adj_factor` falls back to close
 and is disclosed in warnings.
+
+Formal benchmark construction also requires historical PIT `universe_members`
+for the selected `data_source`; current snapshots are not silently accepted as
+formal benchmark constituents.
 
 Suspended benchmark members or members missing a daily price row receive 0.0
 return for that day and reduce reported coverage.

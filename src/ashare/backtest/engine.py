@@ -107,6 +107,7 @@ def run_topn_equal_weight_backtest(
     backtest_config: Mapping[str, object] | None = None,
     data_dictionary: Mapping[str, object] | None = None,
     data_source: str | None = None,
+    require_historical_pit_universe: bool = False,
 ) -> BacktestResult:
     """Run a monthly Top N equal-weight backtest from stored factor signals."""
     start = parse_as_of_date(start_date)
@@ -149,6 +150,7 @@ def run_topn_equal_weight_backtest(
         top_n=top_n,
         data_dictionary=dictionary,
         data_source=data_source,
+        require_historical_pit_universe=require_historical_pit_universe,
         warnings=warnings,
     )
     if not schedules:
@@ -293,6 +295,7 @@ def run_topn_equal_weight_backtest(
         benchmark_config=benchmark_config,
         initial_nav=1.0,
         data_source=data_source,
+        require_historical_pit_universe=require_historical_pit_universe,
     )
     warnings.extend(benchmark_warnings)
 
@@ -338,6 +341,7 @@ def _build_rebalance_schedule(
     top_n: int,
     data_dictionary: Mapping[str, object],
     data_source: str | None,
+    require_historical_pit_universe: bool,
     warnings: list[str],
 ) -> list[_ScheduledRebalance]:
     schedules: list[_ScheduledRebalance] = []
@@ -369,6 +373,8 @@ def _build_rebalance_schedule(
             top_n=top_n,
             data_dictionary=data_dictionary,
             data_source=data_source,
+            require_universe_snapshot=require_historical_pit_universe,
+            require_historical_pit_universe=require_historical_pit_universe,
         )
         schedules.append(
             _ScheduledRebalance(

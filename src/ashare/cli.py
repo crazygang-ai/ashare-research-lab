@@ -79,7 +79,12 @@ from ashare.storage.universe_snapshots import (
     write_factor_run_universe,
 )
 from ashare.validation.config import load_validation_config, merge_validation_config
-from ashare.validation.event_study import BENCHMARKS, DEDUPLICATION_MODES, EVENT_SOURCES, run_event_study
+from ashare.validation.event_study import (
+    BENCHMARKS,
+    DEDUPLICATION_MODES,
+    EVENT_SOURCES,
+    run_event_study,
+)
 from ashare.validation.runner import load_data_dictionary, validate_factors as run_factor_validation
 
 app = typer.Typer(help="A-share research assistant CLI.")
@@ -136,7 +141,9 @@ def _fail_audit(context: AuditContext | NoopAuditContext | None, exc: BaseExcept
         context.close()
 
 
-def _succeed_audit(context: AuditContext | NoopAuditContext, paths: dict[str, Path] | None = None) -> None:
+def _succeed_audit(
+    context: AuditContext | NoopAuditContext, paths: dict[str, Path] | None = None
+) -> None:
     if paths:
         context.add_artifacts(paths)
     context.succeed()
@@ -864,7 +871,11 @@ def validate_factors(
         },
         config_paths=[validation_config, data_dictionary],
     )
-    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
     try:
         try:
             resolved_data_source = resolve_data_source(connection, data_source)
@@ -924,9 +935,7 @@ def validate_factors(
     typer.echo(f"factors: {factors}")
     typer.echo(f"horizons: {horizons}")
     typer.echo(f"n_groups: {merged_config['n_groups']}")
-    typer.echo(
-        "long_short_return is for factor analysis only and is not an executable strategy."
-    )
+    typer.echo("long_short_return is for factor analysis only and is not an executable strategy.")
 
     for warning in result.warnings:
         typer.echo(f"WARNING: {warning}")
@@ -965,6 +974,7 @@ def validate_factors(
     _print_frame("group_return_summary", group_summary, verbose=verbose)
 
     _print_frame("decay_curve", result.decay_curve, verbose=verbose)
+    _print_frame("yearly_ic_summary", result.yearly_ic_summary, verbose=verbose)
     _succeed_audit(context)
 
 
@@ -1110,7 +1120,9 @@ def event_study(
         _fail_audit(context, exc)
         raise click.ClickException(str(exc)) from exc
 
-    typer.echo("event-study report is for research validation only and is not a trading instruction.")
+    typer.echo(
+        "event-study report is for research validation only and is not a trading instruction."
+    )
     typer.echo("事件研究报告仅供信号验证，不是组合回测或交易指令。")
     typer.echo(f"Database path: {db_path}")
     typer.echo(f"Event interval: {from_} to {to}")
@@ -1201,7 +1213,13 @@ def service_workflow(
             source="service-workflow-cli",
             allow_disabled_dry_run=True,
         )
-    except (OSError, ValueError, WorkflowNotFoundError, WorkflowDisabledError, WorkflowDatabaseConflictError) as exc:
+    except (
+        OSError,
+        ValueError,
+        WorkflowNotFoundError,
+        WorkflowDisabledError,
+        WorkflowDatabaseConflictError,
+    ) as exc:
         raise click.ClickException(str(exc)) from exc
 
     typer.echo(f"workflow: {result['workflow_name']}")
@@ -1303,7 +1321,11 @@ def scan(
         },
         config_paths=[data_dictionary],
     )
-    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
     try:
         try:
             result = scan_candidates(
@@ -1408,7 +1430,9 @@ def score(
         horizons = _parse_horizon_option(horizon)
         if horizons is None:
             diagnostics = loaded_config.get("diagnostics", {})
-            yearly = diagnostics.get("yearly_stability", {}) if isinstance(diagnostics, dict) else {}
+            yearly = (
+                diagnostics.get("yearly_stability", {}) if isinstance(diagnostics, dict) else {}
+            )
             if not isinstance(yearly, dict):
                 yearly = {}
             horizons = [int(value) for value in yearly.get("horizons", [20])]
@@ -1467,7 +1491,11 @@ def score(
         artifact_input_paths=_artifact_input_files(validation_dir),
     )
     context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
-    connection_for_source = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    connection_for_source = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
     close_source_connection = not isinstance(context, AuditContext)
     try:
         resolved_data_source = resolve_data_source(connection_for_source, data_source)
@@ -1508,7 +1536,11 @@ def score(
         _fail_audit(context, exc)
         raise exc
 
-    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
 
     try:
         try:
@@ -1666,13 +1698,18 @@ def backtest(
         },
         config_paths=[backtest_config, data_dictionary],
     )
-    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
     try:
         try:
             resolved_data_source = resolve_data_source(connection, data_source)
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
-        if _actual_run_mode(context, run_mode, audit_config) == "formal":
+        actual_run_mode = _actual_run_mode(context, run_mode, audit_config)
+        if actual_run_mode == "formal":
             _require_historical_pit_universe(
                 connection,
                 source_run_id=source_run_id,
@@ -1692,14 +1729,19 @@ def backtest(
                 backtest_config=merged_config,
                 data_dictionary=loaded_dictionary,
                 data_source=resolved_data_source,
+                require_historical_pit_universe=actual_run_mode == "formal",
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
         context.add_duckdb_table_input("factor_values", source_run_id=source_run_id)
         context.add_duckdb_table_input("factor_run_universe", source_run_id=source_run_id)
-        context.add_duckdb_table_input("daily_prices", predicate=f"{from_}..{to}; source={resolved_data_source}")
+        context.add_duckdb_table_input(
+            "daily_prices", predicate=f"{from_}..{to}; source={resolved_data_source}"
+        )
         context.add_duckdb_table_input("universe_members", predicate=f"index_code={index_code}")
-        context.add_duckdb_table_input("valuation_daily", predicate=f"{from_}..{to}; source={resolved_data_source}")
+        context.add_duckdb_table_input(
+            "valuation_daily", predicate=f"{from_}..{to}; source={resolved_data_source}"
+        )
         universe_fingerprint = factor_run_universe_fingerprint(
             connection,
             source_run_id=source_run_id,
@@ -1778,6 +1820,8 @@ def report(
     n_groups: int | None = typer.Option(None, "--n-groups"),
     validation_config: Path = typer.Option(Path("configs/validation.yaml"), "--validation-config"),
     data_dictionary: Path = typer.Option(Path("configs/data_dictionary.yaml"), "--data-dictionary"),
+    index_code: str | None = typer.Option(None, "--index-code"),
+    data_source: str | None = typer.Option(None, "--data-source"),
     include_hard_filters: bool = typer.Option(False, "--include-hard-filters"),
     output_dir: Path | None = typer.Option(None, "--output-dir"),
     overwrite: bool = typer.Option(False, "--overwrite"),
@@ -1822,13 +1866,24 @@ def report(
             "n_groups": n_groups,
             "validation_config": str(validation_config),
             "data_dictionary": str(data_dictionary),
+            "index_code": index_code,
+            "data_source": data_source,
             "include_hard_filters": include_hard_filters,
             "overwrite": overwrite,
         },
         config_paths=[validation_config, data_dictionary],
     )
-    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path), read_only=True)
+    connection = (
+        context.connection
+        if isinstance(context, AuditContext)
+        else duckdb.connect(str(db_path), read_only=True)
+    )
     try:
+        try:
+            resolved_data_source = resolve_data_source(connection, data_source)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        actual_run_mode = _actual_run_mode(context, run_mode, audit_config)
         try:
             result = run_factor_validation(
                 connection=connection,
@@ -1839,6 +1894,10 @@ def report(
                 include_hard_filters=include_hard_filters,
                 validation_config=merged_config,
                 data_dictionary=loaded_dictionary,
+                index_code=index_code,
+                data_source=resolved_data_source,
+                require_universe_snapshot=actual_run_mode == "formal",
+                require_historical_pit_universe=actual_run_mode == "formal",
             )
         except (TypeError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
@@ -1846,6 +1905,11 @@ def report(
             "factor_values",
             source_run_id=source_run_id,
             predicate=f"{from_}..{to}",
+        )
+        context.add_duckdb_table_input(
+            "factor_run_universe",
+            source_run_id=source_run_id,
+            predicate=f"index_code={index_code}",
         )
     except click.ClickException as exc:
         _fail_audit(context, exc)
@@ -1872,6 +1936,8 @@ def report(
         "factors": factors,
         "horizons": list(merged_config["horizons"]),  # type: ignore[index]
         "n_groups": merged_config["n_groups"],
+        "index_code": index_code,
+        "data_source": resolved_data_source,
         "include_hard_filters": include_hard_filters,
         "validation_config_path": str(validation_config),
         "data_dictionary_path": str(data_dictionary),
@@ -1892,11 +1958,12 @@ def report(
     typer.echo(f"Database path: {db_path}")
     typer.echo(f"Validation interval: {from_} to {to}")
     typer.echo(f"source_run_id: {source_run_id}")
+    typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
+    if index_code is not None:
+        typer.echo(f"index_code: {index_code}")
     typer.echo(f"factors: {', '.join(str(item) for item in factors)}")
     typer.echo(f"horizons: {', '.join(str(item) for item in metadata['horizons'])}")
-    typer.echo(
-        "long_short_return is for factor analysis only and is not an executable strategy."
-    )
+    typer.echo("long_short_return is for factor analysis only and is not an executable strategy.")
     for key, path in paths.items():
         typer.echo(f"{key}: {path}")
     _succeed_audit(context, paths)
@@ -1940,7 +2007,9 @@ def daily_report(
             raise click.ClickException("--top must be non-negative.")
         has_compare_run = compare_scan_run_id is not None or compare_score_run_id is not None
         if has_compare_run and compare_as_of is None:
-            raise click.ClickException("--compare-as-of is required when compare run ids are provided.")
+            raise click.ClickException(
+                "--compare-as-of is required when compare run ids are provided."
+            )
         if compare_as_of is not None and not has_compare_run:
             raise click.ClickException(
                 "--compare-as-of requires --compare-scan-run-id or --compare-score-run-id."
@@ -2122,17 +2191,17 @@ def daily_report(
             predicate=f"source_run_id={source_run_id}; as_of_date={as_of}",
         )
         context.add_duckdb_table_input("factor_run_universe", source_run_id=source_run_id)
-        context.add_duckdb_table_input("universe_members", predicate=f"index_code={resolved_index_code}")
+        context.add_duckdb_table_input(
+            "universe_members", predicate=f"index_code={resolved_index_code}"
+        )
         context.add_duckdb_table_input("announcements", predicate=f"effective_date<={as_of}")
         context.add_duckdb_table_input("risk_events", predicate=f"effective_date<={as_of}")
-        context.add_duckdb_table_input("research_artifacts", predicate="Phase 7 input artifact lookup")
+        context.add_duckdb_table_input(
+            "research_artifacts", predicate="Phase 7 input artifact lookup"
+        )
 
         gate_section = audit_conf.data.get("daily_report", {})
-        gate_config = (
-            gate_section.get("data_quality", {})
-            if isinstance(gate_section, dict)
-            else {}
-        )
+        gate_config = gate_section.get("data_quality", {}) if isinstance(gate_section, dict) else {}
         gate = build_data_quality_gate(
             connection,
             as_of_date=parsed_as_of,
@@ -2362,8 +2431,7 @@ def stock_report(
             )
         if actual_run_mode == "formal" and optional_missing:
             messages = [
-                f"{bundle.kind}: " + "; ".join(bundle.warnings)
-                for bundle in optional_missing
+                f"{bundle.kind}: " + "; ".join(bundle.warnings) for bundle in optional_missing
             ]
             raise click.ClickException(
                 "Formal stock-report received incomplete optional artifact(s): "
@@ -2400,9 +2468,15 @@ def stock_report(
             "industry_classifications",
             predicate=f"stock_code={code}; as_of={as_of}",
         )
-        context.add_duckdb_table_input("universe_members", predicate=f"stock_code={code}; as_of={as_of}")
-        context.add_duckdb_table_input("announcements", predicate=f"stock_code={code}; effective_date<={as_of}")
-        context.add_duckdb_table_input("risk_events", predicate=f"stock_code={code}; effective_date<={as_of}")
+        context.add_duckdb_table_input(
+            "universe_members", predicate=f"stock_code={code}; as_of={as_of}"
+        )
+        context.add_duckdb_table_input(
+            "announcements", predicate=f"stock_code={code}; effective_date<={as_of}"
+        )
+        context.add_duckdb_table_input(
+            "risk_events", predicate=f"stock_code={code}; effective_date<={as_of}"
+        )
         metadata = {
             **_audit_metadata(
                 context,
@@ -2416,6 +2490,7 @@ def stock_report(
             "backtest_run_id": backtest_bundle.run_id if backtest_bundle else None,
             "event_study_run_id": event_bundle.run_id if event_bundle else None,
             "index_code": score_metadata.get("index_code"),
+            "data_source": score_metadata.get("data_source"),
         }
         report = build_stock_report(
             connection,
@@ -2564,7 +2639,9 @@ def calculate_factors(
         },
         config_paths=[factor_config],
     )
-    connection = context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path))
+    connection = (
+        context.connection if isinstance(context, AuditContext) else duckdb.connect(str(db_path))
+    )
     try:
         try:
             resolved_data_source = resolve_data_source(connection, data_source)

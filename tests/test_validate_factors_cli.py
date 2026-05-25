@@ -4,10 +4,13 @@ from pathlib import Path
 import subprocess
 
 import duckdb
+import pandas as pd
 import pytest
 
 from ashare.fixtures.builder import INDEX_CODE, build_fixtures
 from ashare.ingest.local import ingest_local
+from ashare.storage.db import default_schema_path
+from ashare.storage.universe_snapshots import write_factor_run_universe
 from ashare.validation.runner import validate_factors
 
 
@@ -52,6 +55,112 @@ def _tables(db_path: Path) -> set[str]:
     connection = duckdb.connect(str(db_path), read_only=True)
     try:
         return {row[0] for row in connection.execute("SHOW TABLES").fetchall()}
+    finally:
+        connection.close()
+
+
+def _audit_config_without_clean_worktree_gate(tmp_path: Path) -> Path:
+    path = tmp_path / "audit.yaml"
+    artifact_root = tmp_path / "reports"
+    path.write_text(
+        f"""
+version: phase5.v1
+run_tracking:
+  formal_requires_clean_worktree: false
+artifacts:
+  default_root: {artifact_root.as_posix()}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _build_current_snapshot_validation_db(db_path: Path) -> None:
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(default_schema_path().read_text(encoding="utf-8"))
+        connection.executemany(
+            "INSERT INTO trading_calendar (trade_date, is_open, source) VALUES (?, true, 'fixture')",
+            [("2026-01-02",), ("2026-01-05",)],
+        )
+        connection.executemany(
+            """
+            INSERT INTO daily_prices (stock_code, trade_date, close, adj_factor, source)
+            VALUES (?, ?, ?, 1.0, 'fixture')
+            """,
+            [
+                ("A", "2026-01-02", 10.0),
+                ("A", "2026-01-05", 11.0),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO factor_values
+            VALUES ('A', DATE '2026-01-02', 'return_20d', 1.0, DATE '2026-01-02', 'run')
+            """
+        )
+        write_factor_run_universe(
+            connection,
+            source_run_id="run",
+            trade_date=pd.Timestamp("2026-01-02").date(),
+            as_of_date=pd.Timestamp("2026-01-02").date(),
+            index_code="LOCAL",
+            universe=pd.DataFrame(
+                {
+                    "index_code": ["LOCAL"],
+                    "stock_code": ["A"],
+                    "source": ["fixture"],
+                    "source_tag": ["fixture"],
+                    "universe_kind": ["current_snapshot"],
+                }
+            ),
+            data_source="fixture",
+        )
+    finally:
+        connection.close()
+
+
+def _build_mismatched_snapshot_source_validation_db(db_path: Path) -> None:
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(default_schema_path().read_text(encoding="utf-8"))
+        connection.executemany(
+            "INSERT INTO trading_calendar (trade_date, is_open, source) VALUES (?, true, 'prices-vendor')",
+            [("2026-01-02",), ("2026-01-05",)],
+        )
+        connection.executemany(
+            """
+            INSERT INTO daily_prices (stock_code, trade_date, close, adj_factor, source)
+            VALUES (?, ?, ?, 1.0, 'prices-vendor')
+            """,
+            [
+                ("A", "2026-01-02", 10.0),
+                ("A", "2026-01-05", 11.0),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO factor_values
+            VALUES ('A', DATE '2026-01-02', 'return_20d', 1.0, DATE '2026-01-02', 'run')
+            """
+        )
+        write_factor_run_universe(
+            connection,
+            source_run_id="run",
+            trade_date=pd.Timestamp("2026-01-02").date(),
+            as_of_date=pd.Timestamp("2026-01-02").date(),
+            index_code="LOCAL",
+            universe=pd.DataFrame(
+                {
+                    "index_code": ["LOCAL"],
+                    "stock_code": ["A"],
+                    "source": ["universe-vendor"],
+                    "source_tag": ["universe-vendor"],
+                    "universe_kind": ["historical_pit"],
+                }
+            ),
+            data_source="universe-vendor",
+        )
     finally:
         connection.close()
 
@@ -138,6 +247,7 @@ single_factor:
     assert "ic_summary:" in result.stdout
     assert "group_return_summary:" in result.stdout
     assert "decay_curve:" in result.stdout
+    assert "yearly_ic_summary:" in result.stdout
     assert "long_short_return is for factor analysis only" in result.stdout
 
 
@@ -159,11 +269,132 @@ def test_validate_factors_cli_requires_source_run_id(validation_db_path: Path) -
     assert "source-run-id" in result.stderr
 
 
+def test_formal_validate_factors_cli_rejects_current_snapshot_universe(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "validation.duckdb"
+    _build_current_snapshot_validation_db(db_path)
+
+    result = _run_ashare(
+        [
+            "validate-factors",
+            "--db-path",
+            str(db_path),
+            "--from",
+            "2026-01-02",
+            "--to",
+            "2026-01-02",
+            "--source-run-id",
+            "run",
+            "--factor",
+            "return_20d",
+            "--horizon",
+            "1",
+            "--index-code",
+            "LOCAL",
+            "--data-source",
+            "fixture",
+            "--run-mode",
+            "formal",
+            "--audit-config",
+            str(_audit_config_without_clean_worktree_gate(tmp_path)),
+        ],
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "historical PIT universe" in result.stderr
+    assert "current_snapshot" in result.stderr
+
+
+def test_formal_factor_validation_report_rejects_current_snapshot_universe(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "report.duckdb"
+    _build_current_snapshot_validation_db(db_path)
+
+    result = _run_ashare(
+        [
+            "report",
+            "--kind",
+            "factor-validation",
+            "--db-path",
+            str(db_path),
+            "--from",
+            "2026-01-02",
+            "--to",
+            "2026-01-02",
+            "--source-run-id",
+            "run",
+            "--factor",
+            "return_20d",
+            "--horizon",
+            "1",
+            "--index-code",
+            "LOCAL",
+            "--data-source",
+            "fixture",
+            "--run-mode",
+            "formal",
+            "--audit-config",
+            str(_audit_config_without_clean_worktree_gate(tmp_path)),
+            "--output-dir",
+            str(tmp_path / "report-output"),
+        ],
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "historical PIT universe" in result.stderr
+    assert "current_snapshot" in result.stderr
+
+
+def test_formal_validate_factors_cli_rejects_snapshot_source_tag_mismatch(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "validation_mixed_source.duckdb"
+    _build_mismatched_snapshot_source_validation_db(db_path)
+
+    result = _run_ashare(
+        [
+            "validate-factors",
+            "--db-path",
+            str(db_path),
+            "--from",
+            "2026-01-02",
+            "--to",
+            "2026-01-02",
+            "--source-run-id",
+            "run",
+            "--factor",
+            "return_20d",
+            "--horizon",
+            "1",
+            "--index-code",
+            "LOCAL",
+            "--data-source",
+            "prices-vendor",
+            "--run-mode",
+            "formal",
+            "--audit-config",
+            str(_audit_config_without_clean_worktree_gate(tmp_path)),
+        ],
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "source_tag" in result.stderr
+    assert "prices-vendor" in result.stderr
+    assert "universe-vendor" in result.stderr
+
+
 def test_validate_factors_cli_does_not_create_tables_or_files(
     validation_db_path: Path,
 ) -> None:
     before_tables = _tables(validation_db_path)
-    before_files = {path.relative_to(validation_db_path.parent) for path in validation_db_path.parent.rglob("*")}
+    before_files = {
+        path.relative_to(validation_db_path.parent) for path in validation_db_path.parent.rglob("*")
+    }
 
     _run_ashare(
         [
@@ -184,7 +415,9 @@ def test_validate_factors_cli_does_not_create_tables_or_files(
     )
 
     after_tables = _tables(validation_db_path)
-    after_files = {path.relative_to(validation_db_path.parent) for path in validation_db_path.parent.rglob("*")}
+    after_files = {
+        path.relative_to(validation_db_path.parent) for path in validation_db_path.parent.rglob("*")
+    }
 
     assert after_tables == before_tables
     assert after_files == before_files

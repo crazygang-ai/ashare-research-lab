@@ -34,6 +34,7 @@ def calculate_synthetic_benchmarks(
     benchmark_config: Mapping[str, object] | None = None,
     initial_nav: float = 1.0,
     data_source: str | None = None,
+    require_historical_pit_universe: bool = False,
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
     """Calculate monthly static cap-weight and equal-weight synthetic benchmarks."""
     start = parse_as_of_date(start_date)
@@ -60,6 +61,7 @@ def calculate_synthetic_benchmarks(
             index_code=index_code,
             benchmark_config=benchmark_config,
             data_source=data_source,
+            require_historical_pit_universe=require_historical_pit_universe,
         )
         cap_return, cap_coverage = _portfolio_return(
             members=members,
@@ -107,13 +109,20 @@ def _benchmark_members(
     index_code: str,
     benchmark_config: Mapping[str, object] | None,
     data_source: str | None,
+    require_historical_pit_universe: bool,
 ) -> pd.DataFrame:
     universe = query_universe_members_as_of(
         connection,
         signal_date,
         index_code=index_code,
         source_tag=None if data_source == "legacy" else data_source,
+        allow_current_snapshot=not require_historical_pit_universe,
     )
+    if require_historical_pit_universe and universe.empty:
+        raise ValueError(
+            "Formal backtest benchmark requires historical PIT universe_members for "
+            f"index_code={index_code} on {signal_date.isoformat()}."
+        )
     if universe.empty:
         return pd.DataFrame(columns=["stock_code", "cap_weight", "equal_weight"])
     members = (

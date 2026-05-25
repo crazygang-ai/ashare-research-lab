@@ -14,10 +14,15 @@ REQUIRED_FACTORS = (
     "return_20d",
     "return_60d",
     "above_ma60",
+    "volatility_20d",
+    "max_drawdown_60d",
+    "amount_cv_20d",
     "pe_ttm_percentile",
     "pb_percentile",
+    "industry_pe_ttm_percentile",
     "revenue_yoy",
     "profit_yoy",
+    "operating_cashflow_to_profit",
 )
 
 REQUIRED_HARD_FILTERS = (

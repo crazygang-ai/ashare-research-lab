@@ -19,17 +19,23 @@ PHASE_1A4_FACTORS = {
     "return_20d",
     "return_60d",
     "above_ma60",
+    "volatility_20d",
+    "max_drawdown_60d",
+    "amount_cv_20d",
     "low_liquidity",
     "is_st",
     "is_suspended",
     "is_delisted",
     "pe_ttm_percentile",
     "pb_percentile",
+    "industry_pe_ttm_percentile",
     "revenue_yoy",
     "profit_yoy",
+    "operating_cashflow_to_profit",
 }
 ALLOWED_DIRECTIONS = {"higher_is_better", "lower_is_better", "boolean_filter"}
 REQUIRED_SCHEMA_FIELDS = {
+    "daily_prices.close",
     "daily_prices.adj_factor",
     "daily_prices.is_suspended",
     "daily_prices.amount",
@@ -37,6 +43,7 @@ REQUIRED_SCHEMA_FIELDS = {
     "valuation_daily.pb",
     "fundamental_reports.revenue",
     "fundamental_reports.net_profit",
+    "fundamental_reports.operating_cashflow",
     "fundamental_reports.publish_time",
     "fundamental_reports.effective_date",
     "securities.delist_date",
@@ -48,6 +55,7 @@ REQUIRED_SCHEMA_FIELDS = {
     "st_status.out_effective_date",
     "industry_classifications.in_effective_date",
     "industry_classifications.out_effective_date",
+    "industry_classifications.industry_l1",
     "factor_values.factor_value",
     "factor_values.as_of_date",
     "factor_values.source_run_id",
@@ -77,10 +85,15 @@ PARAM_PATHS = {
     "return_20d": ("factors", "return_20d"),
     "return_60d": ("factors", "return_60d"),
     "above_ma60": ("factors", "above_ma60"),
+    "volatility_20d": ("factors", "volatility_20d"),
+    "max_drawdown_60d": ("factors", "max_drawdown_60d"),
+    "amount_cv_20d": ("factors", "amount_cv_20d"),
     "pe_ttm_percentile": ("factors", "pe_ttm_percentile"),
     "pb_percentile": ("factors", "pb_percentile"),
+    "industry_pe_ttm_percentile": ("factors", "industry_pe_ttm_percentile"),
     "revenue_yoy": ("factors", "revenue_yoy"),
     "profit_yoy": ("factors", "profit_yoy"),
+    "operating_cashflow_to_profit": ("factors", "operating_cashflow_to_profit"),
     "low_liquidity": ("hard_filters", "low_liquidity"),
     "is_st": ("hard_filters", "is_st"),
     "is_suspended": ("hard_filters", "is_suspended"),
@@ -160,13 +173,30 @@ def test_required_factor_descriptions_encode_phase_1a4_decisions() -> None:
         for keyword in ("单股票", "历史", "分位", "不是横截面"):
             assert keyword in description
 
+    for factor_name in ("volatility_20d", "max_drawdown_60d", "amount_cv_20d"):
+        entry = factors[factor_name]
+        assert isinstance(entry, dict)
+        description = str(entry["description"])
+        for keyword in ("PIT", "daily_prices", "观测"):
+            assert keyword in description
+
+    industry_pe = factors["industry_pe_ttm_percentile"]
+    assert isinstance(industry_pe, dict)
+    for keyword in ("行业", "横截面", "PIT"):
+        assert keyword in str(industry_pe["description"])
+
+    cashflow_quality = factors["operating_cashflow_to_profit"]
+    assert isinstance(cashflow_quality, dict)
+    for keyword in ("operating_cashflow", "net_profit", "PIT"):
+        assert keyword in str(cashflow_quality["description"])
+
 
 def test_generated_markdown_matches_renderer_output() -> None:
     data_dictionary = _load_yaml("configs/data_dictionary.yaml")
 
-    assert (ROOT / "docs/data_dictionary.md").read_text(
-        encoding="utf-8"
-    ) == render_data_dictionary(data_dictionary)
+    assert (ROOT / "docs/data_dictionary.md").read_text(encoding="utf-8") == render_data_dictionary(
+        data_dictionary
+    )
     assert (ROOT / "docs/factor_definitions.md").read_text(
         encoding="utf-8"
     ) == render_factor_definitions(data_dictionary)

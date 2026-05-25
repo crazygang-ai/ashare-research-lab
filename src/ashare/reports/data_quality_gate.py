@@ -45,6 +45,7 @@ DEFAULT_GATE_CONFIG: dict[str, Any] = {
     "min_hard_filter_coverage": 0.8,
     "allow_missing_announcements": True,
     "allow_missing_risk_events": True,
+    "required_universe_kind": None,
     "required_schema_version": CURRENT_SCHEMA_VERSION,
 }
 
@@ -88,8 +89,8 @@ def build_data_quality_gate(
     config = {**DEFAULT_GATE_CONFIG, **dict(gate_config or {})}
     rows: list[dict[str, object]] = []
 
-    _calendar_check(connection, parsed_as_of, rows)
-    universe_codes, universe_source = _target_universe(
+    _calendar_check(connection, parsed_as_of, rows, data_source=data_source)
+    universe_codes, universe_source, universe_kind_counts = _target_universe(
         connection,
         parsed_as_of,
         source_run_id=source_run_id,
@@ -106,6 +107,11 @@ def build_data_quality_gate(
         "Target PIT universe resolved."
         if universe_codes
         else "No PIT universe or active securities were found for as_of_date.",
+    )
+    _universe_kind_check(
+        rows,
+        universe_kind_counts=universe_kind_counts,
+        required_universe_kind=config.get("required_universe_kind"),
     )
     _coverage_check(
         connection,
@@ -172,6 +178,7 @@ def build_data_quality_gate(
         "index_code": index_code,
         "data_source": data_source,
         "universe_source": universe_source,
+        "universe_kind_counts": universe_kind_counts,
         "gate_config": dict(config),
         "universe_size": len(universe_codes),
     }
@@ -204,6 +211,7 @@ def _calendar_check(
     connection: duckdb.DuckDBPyConnection,
     parsed_as_of: date,
     rows: list[dict[str, object]],
+    data_source: str | None,
 ) -> None:
     if not _table_exists(connection, "trading_calendar"):
         _append(
@@ -216,14 +224,16 @@ def _calendar_check(
             "trading_calendar table is missing.",
         )
         return
-    row = connection.execute(
-        """
+    sql = """
         SELECT COUNT(*), COALESCE(MAX(CASE WHEN is_open THEN 1 ELSE 0 END), 0)
         FROM trading_calendar
         WHERE trade_date = ?
-        """,
-        [parsed_as_of],
-    ).fetchone()
+    """
+    params: list[Any] = [parsed_as_of]
+    if data_source is not None and _table_has_column(connection, "trading_calendar", "source"):
+        sql += " AND source = ?"
+        params.append(data_source)
+    row = connection.execute(sql, params).fetchone()
     row_count = int(row[0])
     is_open = int(row[1]) == 1
     _append(
@@ -245,7 +255,7 @@ def _target_universe(
     source_run_id: str,
     index_code: str | None,
     data_source: str | None,
-) -> tuple[tuple[str, ...], str]:
+) -> tuple[tuple[str, ...], str, dict[str, int]]:
     snapshot = load_factor_run_universe(
         connection,
         source_run_id=source_run_id,
@@ -253,7 +263,11 @@ def _target_universe(
         index_code=index_code,
     )
     if not snapshot.empty:
-        return tuple(sorted(set(snapshot["stock_code"].astype(str)))), "factor_run_universe"
+        return (
+            tuple(sorted(set(snapshot["stock_code"].astype(str)))),
+            "factor_run_universe",
+            _universe_kind_counts(snapshot),
+        )
     if _table_exists(connection, "universe_members"):
         universe = query_universe_members_as_of(
             connection,
@@ -262,7 +276,11 @@ def _target_universe(
             source_tag=None if data_source == "legacy" else data_source,
         )
         if not universe.empty:
-            return tuple(sorted(set(universe["stock_code"].astype(str)))), "pit_universe_members"
+            return (
+                tuple(sorted(set(universe["stock_code"].astype(str)))),
+                "pit_universe_members",
+                _universe_kind_counts(universe),
+            )
     if _table_exists(connection, "securities"):
         securities = query_securities_as_of(
             connection,
@@ -271,8 +289,81 @@ def _target_universe(
             source=data_source,
         )
         if not securities.empty:
-            return tuple(sorted(set(securities["stock_code"].astype(str)))), "securities_fallback"
-    return (), "missing"
+            codes = tuple(sorted(set(securities["stock_code"].astype(str))))
+            return codes, "securities_fallback", {"unknown_legacy": len(codes)}
+    return (), "missing", {}
+
+
+def _universe_kind_check(
+    rows: list[dict[str, object]],
+    *,
+    universe_kind_counts: Mapping[str, int],
+    required_universe_kind: object,
+) -> None:
+    observed = _format_universe_kind_counts(universe_kind_counts)
+    required = str(required_universe_kind).strip() if required_universe_kind is not None else ""
+    if not universe_kind_counts:
+        _append(
+            rows,
+            "universe_kind_profile",
+            "FAIL",
+            "blocking",
+            observed,
+            required or "historical_pit/current_snapshot/unknown_legacy classified",
+            "Universe kind could not be classified because the target universe is empty.",
+        )
+        return
+    if required:
+        matches_required = set(universe_kind_counts) == {required}
+        _append(
+            rows,
+            "universe_kind_profile",
+            "PASS" if matches_required else "FAIL",
+            "info" if matches_required else "blocking",
+            observed,
+            required,
+            f"Universe kind satisfies required_universe_kind={required}."
+            if matches_required
+            else f"Universe kind does not satisfy required_universe_kind={required}.",
+        )
+        return
+    if set(universe_kind_counts) == {"historical_pit"}:
+        _append(
+            rows,
+            "universe_kind_profile",
+            "PASS",
+            "info",
+            observed,
+            "historical_pit preferred for formal research",
+            "Universe is historical_pit.",
+        )
+        return
+    _append(
+        rows,
+        "universe_kind_profile",
+        "WARN",
+        "warning",
+        observed,
+        "historical_pit for formal research",
+        "Universe is not purely historical_pit; treat current_snapshot and unknown_legacy as exploratory only.",
+    )
+
+
+def _universe_kind_counts(frame: pd.DataFrame) -> dict[str, int]:
+    if frame.empty:
+        return {}
+    if "universe_kind" not in frame.columns:
+        return {"unknown_legacy": int(len(frame))}
+    values = frame["universe_kind"].fillna("unknown_legacy").astype(str).str.strip()
+    values = values.replace("", "unknown_legacy")
+    counts = values.value_counts().to_dict()
+    return {str(key): int(counts[key]) for key in sorted(counts)}
+
+
+def _format_universe_kind_counts(counts: Mapping[str, int]) -> str:
+    if not counts:
+        return "none"
+    return "; ".join(f"{kind}={int(count)}" for kind, count in sorted(counts.items()))
 
 
 def _coverage_check(

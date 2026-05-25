@@ -380,6 +380,8 @@ run_cmd \
   --from "$VALIDATION_FROM" \
   --to "$VALIDATION_TO" \
   --source-run-id "$FACTOR_RUN" \
+  --index-code "$INDEX_CODE" \
+  --data-source "$SOURCE" \
   --factor return_20d \
   --factor return_60d \
   --factor above_ma60 \

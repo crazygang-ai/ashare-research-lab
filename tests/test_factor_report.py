@@ -112,6 +112,23 @@ def _sample_result() -> FactorValidationResult:
                 }
             ]
         ),
+        yearly_ic_summary=pd.DataFrame(
+            [
+                {
+                    "factor_name": "return_20d",
+                    "year": 2026,
+                    "horizon": 20,
+                    "valid_ic_dates": 1,
+                    "valid_oriented_ic_dates": 1,
+                    "mean_rank_ic": 0.2,
+                    "mean_oriented_rank_ic": 0.2,
+                    "oriented_icir": 0.0,
+                    "positive_oriented_ic_ratio": 1.0,
+                    "valid_group_dates": 1,
+                    "mean_top_minus_bottom_label_return": 0.2,
+                }
+            ]
+        ),
         warnings=("coverage fallback used", "Boolean hard filters are included"),
     )
 
@@ -143,6 +160,7 @@ def test_render_factor_validation_markdown_contains_required_sections() -> None:
     assert "Rank IC And ICIR Summary" in text
     assert "Top And Bottom Group Returns" in text
     assert "Decay Curve" in text
+    assert "Yearly IC Stability" in text
     assert "coverage fallback used" in text
     assert "forward return 是验证标签，不是交易收益" in text
     assert "本报告不包含综合评分" in text
@@ -173,6 +191,7 @@ def test_write_factor_validation_report_outputs_markdown_and_full_sorted_csvs(
         "ic_summary.csv",
         "group_returns.csv",
         "decay_curve.csv",
+        "yearly_ic_summary.csv",
     }
     coverage = pd.read_csv(tmp_path / "coverage.csv")
     assert list(coverage.columns) == [
@@ -190,9 +209,9 @@ def test_write_factor_validation_report_outputs_markdown_and_full_sorted_csvs(
     pd.testing.assert_frame_equal(coverage.reset_index(drop=True), expected_coverage)
 
     rank_ic = pd.read_csv(tmp_path / "rank_ic.csv")
-    expected_rank_ic = rank_ic.sort_values(
-        ["factor_name", "horizon", "trade_date"]
-    ).reset_index(drop=True)
+    expected_rank_ic = rank_ic.sort_values(["factor_name", "horizon", "trade_date"]).reset_index(
+        drop=True
+    )
     pd.testing.assert_frame_equal(rank_ic.reset_index(drop=True), expected_rank_ic)
 
     with pytest.raises(FileExistsError):

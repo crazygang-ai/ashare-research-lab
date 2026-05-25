@@ -146,6 +146,10 @@ def _validate_members(frame: pd.DataFrame) -> None:
     )
     if bool(bad_out.any()):
         raise ValueError("out_effective_date must be after in_effective_date.")
+    bad_out_date = frame["out_date"].notna() & (frame["out_date"] <= frame["in_date"])
+    if bool(bad_out_date.any()):
+        raise ValueError("out_date must be after in_date.")
+    _validate_historical_pit_visibility(frame)
     duplicate_keys = frame.duplicated(
         ["source_tag", "index_code", "stock_code", "in_effective_date"],
         keep=False,
@@ -168,6 +172,48 @@ def _fail_on_overlapping_intervals(frame: pd.DataFrame) -> None:
                 raise ValueError(f"Overlapping index member intervals for {key}.")
             previous_out = _to_date(row.out_effective_date) if pd.notna(row.out_effective_date) else None
             previous_in = current_in
+
+
+def _validate_historical_pit_visibility(frame: pd.DataFrame) -> None:
+    historical = frame[frame["universe_kind"].eq("historical_pit")].copy()
+    if historical.empty:
+        return
+    missing_in_publish = historical["in_publish_time"].isna()
+    if bool(missing_in_publish.any()):
+        raise ValueError("historical PIT rows require in_publish_time.")
+    _validate_publish_before_effective(
+        historical,
+        publish_column="in_publish_time",
+        effective_column="in_effective_date",
+    )
+
+    exit_columns = ["out_date", "out_publish_time", "out_effective_date"]
+    has_any_exit_field = historical[exit_columns].notna().any(axis=1)
+    has_all_exit_fields = historical[exit_columns].notna().all(axis=1)
+    incomplete_exit = has_any_exit_field & ~has_all_exit_fields
+    if bool(incomplete_exit.any()):
+        raise ValueError(
+            "historical PIT exit rows require out_date, out_publish_time, and out_effective_date."
+        )
+    exited = historical[has_all_exit_fields].copy()
+    if not exited.empty:
+        _validate_publish_before_effective(
+            exited,
+            publish_column="out_publish_time",
+            effective_column="out_effective_date",
+        )
+
+
+def _validate_publish_before_effective(
+    frame: pd.DataFrame,
+    *,
+    publish_column: str,
+    effective_column: str,
+) -> None:
+    publish_dates = pd.to_datetime(frame[publish_column], errors="coerce").dt.date
+    bad = publish_dates > frame[effective_column]
+    if bool(bad.any()):
+        raise ValueError(f"{publish_column} must be on or before {effective_column}.")
 
 
 def _delete_existing_ranges(

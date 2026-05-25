@@ -483,22 +483,29 @@ def _stock_metadata(
     score_metadata: Mapping[str, Any],
     extra_metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
+    data_source = _first_non_empty(
+        extra_metadata.get("data_source"),
+        score_metadata.get("data_source"),
+    )
     securities = query_securities_as_of(
         connection,
         parsed_as_of,
         include_delisted=True,
         stock_code=stock_code,
+        source=str(data_source) if data_source is not None else None,
     )
     industries = query_industry_classifications_as_of(
         connection,
         parsed_as_of,
         stock_code=stock_code,
+        source=str(data_source) if data_source is not None else None,
     )
     universe = query_universe_members_as_of(
         connection,
         parsed_as_of,
         index_code=index_code,
         stock_code=stock_code,
+        source_tag=str(data_source) if data_source is not None else None,
     )
     stock_name = securities.iloc[0]["stock_name"] if not securities.empty else ""
     industry_l1 = industries.iloc[0]["industry_l1"] if not industries.empty else ""
@@ -516,6 +523,7 @@ def _stock_metadata(
         "industry_l2": industry_l2,
         "in_target_universe": not universe.empty,
         "index_code": index_code,
+        "data_source": data_source,
         "source_run_id": source_run_id,
         "score_run_id": score_bundle.run_id,
         "scan_run_id": scan_bundle.run_id if scan_bundle else None,

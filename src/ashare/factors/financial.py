@@ -8,7 +8,7 @@ from typing import Sequence
 import pandas as pd
 
 
-FINANCIAL_FACTORS = {"revenue_yoy", "profit_yoy"}
+FINANCIAL_FACTORS = {"revenue_yoy", "profit_yoy", "operating_cashflow_to_profit"}
 
 
 def calculate_financial_factors(
@@ -41,6 +41,15 @@ def calculate_financial_factors(
             continue
         current_period = max(stock_reports["report_period"])
         current = stock_reports[stock_reports["report_period"] == current_period].iloc[-1]
+        if "operating_cashflow_to_profit" in selected:
+            value = _cashflow_to_profit(current["operating_cashflow"], current["net_profit"])
+            if value is not None:
+                rows.append(
+                    _factor_row(stock_code, as_of_date, "operating_cashflow_to_profit", value)
+                )
+
+        if not {"revenue_yoy", "profit_yoy"} & selected:
+            continue
         previous_period = _previous_year_same_period(current_period)
         previous = stock_reports[stock_reports["report_period"] == previous_period]
         if previous.empty:
@@ -71,6 +80,15 @@ def _yoy(current_value: object, previous_value: object) -> float | None:
     if previous <= 0:
         return None
     return float(current_value) / previous - 1.0
+
+
+def _cashflow_to_profit(operating_cashflow: object, net_profit: object) -> float | None:
+    if pd.isna(operating_cashflow) or pd.isna(net_profit):
+        return None
+    profit = float(net_profit)
+    if profit <= 0:
+        return None
+    return float(operating_cashflow) / profit
 
 
 def _factor_row(

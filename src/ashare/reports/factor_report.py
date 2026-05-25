@@ -20,6 +20,7 @@ FACTOR_REPORT_FILES = {
     "ic_summary": "ic_summary.csv",
     "group_returns": "group_returns.csv",
     "decay_curve": "decay_curve.csv",
+    "yearly_ic_summary": "yearly_ic_summary.csv",
 }
 
 REQUIRED_FACTOR_METADATA = {
@@ -43,6 +44,7 @@ _SORT_KEYS = {
     "ic_summary": ("factor_name", "horizon"),
     "group_returns": ("factor_name", "horizon", "trade_date"),
     "decay_curve": ("factor_name", "horizon"),
+    "yearly_ic_summary": ("factor_name", "horizon", "year"),
 }
 
 
@@ -95,6 +97,10 @@ def render_factor_validation_markdown(
         "",
         _markdown_table(sorted_frames["decay_curve"]),
         "",
+        "## Yearly IC Stability",
+        "",
+        _markdown_table(sorted_frames["yearly_ic_summary"]),
+        "",
         "## Warnings",
         "",
     ]
@@ -112,9 +118,10 @@ def render_factor_validation_markdown(
             "",
             "- forward return 是验证标签，不是交易收益。",
             "- long_short_return 只用于单因子分析，不代表可执行策略。",
+            "- yearly_ic_summary 按自然年切片观察 IC 稳定性，不代表年度收益承诺。",
             "- 本报告不是回测报告。",
             "- 本报告不包含综合评分。",
-            "- 分年度表现、分行业表现不在 Phase 1a-6 输出范围内。",
+            "- 分行业验证表现不在 Phase 1a-6 输出范围内。",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -131,9 +138,7 @@ def write_factor_validation_report(
     resolved_output_dir = Path(output_dir)
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
-    paths = {
-        key: resolved_output_dir / filename for key, filename in FACTOR_REPORT_FILES.items()
-    }
+    paths = {key: resolved_output_dir / filename for key, filename in FACTOR_REPORT_FILES.items()}
     _fail_if_exists(paths.values(), overwrite=overwrite)
 
     sorted_frames = _sorted_factor_frames(result)
@@ -148,6 +153,7 @@ def write_factor_validation_report(
         "ic_summary",
         "group_returns",
         "decay_curve",
+        "yearly_ic_summary",
     ]:
         sorted_frames[key].to_csv(paths[key], index=False)
     return paths
@@ -161,6 +167,7 @@ def _sorted_factor_frames(result: FactorValidationResult) -> dict[str, pd.DataFr
         "ic_summary": _sort_frame(result.ic_summary, "ic_summary"),
         "group_returns": _sort_frame(result.group_returns, "group_returns"),
         "decay_curve": _sort_frame(result.decay_curve, "decay_curve"),
+        "yearly_ic_summary": _sort_frame(result.yearly_ic_summary, "yearly_ic_summary"),
     }
 
 
@@ -201,9 +208,7 @@ def _markdown_table(frame: pd.DataFrame) -> str:
     header = "| " + " | ".join(_escape_markdown_cell(column) for column in columns) + " |"
     separator = "| " + " | ".join("---" for _ in columns) + " |"
     rows = [
-        "| "
-        + " | ".join(_escape_markdown_cell(_stringify(value)) for value in row)
-        + " |"
+        "| " + " | ".join(_escape_markdown_cell(_stringify(value)) for value in row) + " |"
         for row in frame.itertuples(index=False, name=None)
     ]
     if not rows:

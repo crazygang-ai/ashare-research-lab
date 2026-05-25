@@ -20,8 +20,10 @@ def test_default_scoring_config_is_phase3_ready() -> None:
     assert enabled_scoring_factors(config) == [
         "revenue_yoy",
         "profit_yoy",
+        "operating_cashflow_to_profit",
         "pe_ttm_percentile",
         "pb_percentile",
+        "industry_pe_ttm_percentile",
         "return_20d",
         "above_ma60",
     ]
@@ -31,7 +33,11 @@ def test_default_scoring_config_is_phase3_ready() -> None:
         "is_delisted",
         "low_liquidity",
     ]
-    assert enabled_risk_penalty_factors(config) == []
+    assert enabled_risk_penalty_factors(config) == [
+        "volatility_20d",
+        "max_drawdown_60d",
+        "amount_cv_20d",
+    ]
 
 
 def test_scoring_config_rejects_invalid_group_weight_sum() -> None:

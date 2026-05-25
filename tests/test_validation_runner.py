@@ -122,6 +122,11 @@ def test_validate_factors_filters_inputs_and_uses_factor_signal_dates(
     assert not result.ic_summary.empty
     assert not result.group_returns.empty
     assert not result.decay_curve.empty
+    assert not result.yearly_ic_summary.empty
+    yearly = result.yearly_ic_summary.iloc[0]
+    assert yearly["year"] == 2026
+    assert yearly["valid_oriented_ic_dates"] >= 1
+    assert 0.0 <= yearly["positive_oriented_ic_ratio"] <= 1.0
 
 
 def test_validate_factors_defaults_exclude_hard_filters_and_include_warning_when_requested(

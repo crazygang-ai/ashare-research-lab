@@ -23,6 +23,30 @@ factors:
     params:
       window_days: 60
 
+  volatility_20d:
+    direction: lower_is_better
+    group: risk
+    hard_filter: false
+    soft_penalty: true
+    params:
+      window_days: 20
+
+  max_drawdown_60d:
+    direction: lower_is_better
+    group: risk
+    hard_filter: false
+    soft_penalty: true
+    params:
+      window_days: 60
+
+  amount_cv_20d:
+    direction: lower_is_better
+    group: risk
+    hard_filter: false
+    soft_penalty: true
+    params:
+      window_days: 20
+
   pe_ttm_percentile:
     direction: lower_is_better
     group: valuation
@@ -41,6 +65,14 @@ factors:
       window_days: 252
       min_observations: 20
 
+  industry_pe_ttm_percentile:
+    direction: lower_is_better
+    group: valuation
+    hard_filter: false
+    soft_penalty: false
+    params:
+      min_industry_observations: 2
+
   revenue_yoy:
     direction: higher_is_better
     group: financial
@@ -49,6 +81,13 @@ factors:
     params: {}
 
   profit_yoy:
+    direction: higher_is_better
+    group: financial
+    hard_filter: false
+    soft_penalty: false
+    params: {}
+
+  operating_cashflow_to_profit:
     direction: higher_is_better
     group: financial
     hard_filter: false

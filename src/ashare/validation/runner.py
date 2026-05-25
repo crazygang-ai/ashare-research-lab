@@ -13,7 +13,10 @@ import pandas as pd
 import yaml
 
 from ashare.pit.asof import DateLike, parse_as_of_date
-from ashare.storage.universe_snapshots import load_factor_run_universe
+from ashare.storage.universe_snapshots import (
+    load_factor_run_universe,
+    require_factor_run_universe_data_source,
+)
 from ashare.validation.config import merge_validation_config
 from ashare.validation.decay import aggregate_decay_curve
 from ashare.validation.ic import calculate_rank_ic, summarize_ic
@@ -33,6 +36,19 @@ COVERAGE_COLUMNS = [
 ]
 
 LABEL_SUMMARY_COLUMNS = ["horizon", "valid_label_count", "latest_usable_signal_date"]
+YEARLY_IC_SUMMARY_COLUMNS = [
+    "factor_name",
+    "year",
+    "horizon",
+    "valid_ic_dates",
+    "valid_oriented_ic_dates",
+    "mean_rank_ic",
+    "mean_oriented_rank_ic",
+    "oriented_icir",
+    "positive_oriented_ic_ratio",
+    "valid_group_dates",
+    "mean_top_minus_bottom_label_return",
+]
 
 FACTOR_INPUT_COLUMNS = [
     "stock_code",
@@ -55,6 +71,7 @@ class FactorValidationResult:
     ic_summary: pd.DataFrame
     group_returns: pd.DataFrame
     decay_curve: pd.DataFrame
+    yearly_ic_summary: pd.DataFrame
     warnings: tuple[str, ...] = ()
 
 
@@ -138,6 +155,7 @@ def validate_factors(
         require_same_as_of_trade_date=require_same_as_of,
         universe_factor_names=universe_factor_names,
         index_code=index_code,
+        data_source=data_source,
         require_universe_snapshot=require_universe_snapshot,
         require_historical_pit_universe=require_historical_pit_universe,
     )
@@ -168,9 +186,12 @@ def validate_factors(
         min_group_size=min_group_size,
     )
     decay_curve = aggregate_decay_curve(rank_ic, group_returns)
+    yearly_ic_summary = summarize_yearly_ic_stability(rank_ic, group_returns)
 
     warnings = list(coverage_warnings)
-    if include_hard_filters and any(directions[name] == "boolean_filter" for name in selected_factors):
+    if include_hard_filters and any(
+        directions[name] == "boolean_filter" for name in selected_factors
+    ):
         warnings.append(
             "Boolean hard filters are included; oriented IC and group returns are not "
             "included in the usual factor interpretation."
@@ -183,8 +204,81 @@ def validate_factors(
         ic_summary=ic_summary,
         group_returns=group_returns,
         decay_curve=decay_curve,
+        yearly_ic_summary=yearly_ic_summary,
         warnings=tuple(warnings),
     )
+
+
+def summarize_yearly_ic_stability(
+    rank_ic: pd.DataFrame,
+    group_returns: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggregate daily IC into calendar-year stability slices."""
+    if rank_ic.empty:
+        return pd.DataFrame(columns=YEARLY_IC_SUMMARY_COLUMNS)
+
+    working = rank_ic.copy()
+    working["trade_date"] = pd.to_datetime(working["trade_date"])
+    working["year"] = working["trade_date"].dt.year
+    group_return_lookup = _yearly_group_return_lookup(group_returns)
+    rows: list[dict[str, object]] = []
+    for (factor_name, year, horizon), group in working.groupby(
+        ["factor_name", "year", "horizon"],
+        sort=True,
+    ):
+        rank_values = group["rank_ic"].dropna().astype(float)
+        oriented_values = group["oriented_rank_ic"].dropna().astype(float)
+        group_key = (str(factor_name), int(year), int(horizon))
+        group_metrics = group_return_lookup.get(
+            group_key,
+            {"valid_group_dates": 0, "mean_top_minus_bottom_label_return": float("nan")},
+        )
+        rows.append(
+            {
+                "factor_name": factor_name,
+                "year": int(year),
+                "horizon": int(horizon),
+                "valid_ic_dates": int(len(rank_values)),
+                "valid_oriented_ic_dates": int(len(oriented_values)),
+                "mean_rank_ic": _mean_or_nan(rank_values),
+                "mean_oriented_rank_ic": _mean_or_nan(oriented_values),
+                "oriented_icir": _icir(oriented_values),
+                "positive_oriented_ic_ratio": _positive_ratio(oriented_values),
+                "valid_group_dates": int(group_metrics["valid_group_dates"]),
+                "mean_top_minus_bottom_label_return": group_metrics[
+                    "mean_top_minus_bottom_label_return"
+                ],
+            }
+        )
+    return (
+        pd.DataFrame(rows, columns=YEARLY_IC_SUMMARY_COLUMNS)
+        .sort_values(
+            ["factor_name", "horizon", "year"],
+            kind="mergesort",
+        )
+        .reset_index(drop=True)
+    )
+
+
+def _yearly_group_return_lookup(
+    group_returns: pd.DataFrame,
+) -> dict[tuple[str, int, int], dict[str, object]]:
+    if group_returns.empty:
+        return {}
+    working = group_returns.copy()
+    working["trade_date"] = pd.to_datetime(working["trade_date"])
+    working["year"] = working["trade_date"].dt.year
+    lookup: dict[tuple[str, int, int], dict[str, object]] = {}
+    for (factor_name, year, horizon), group in working.groupby(
+        ["factor_name", "year", "horizon"],
+        sort=True,
+    ):
+        values = group["top_minus_bottom_return"].dropna().astype(float)
+        lookup[(str(factor_name), int(year), int(horizon))] = {
+            "valid_group_dates": int(group["trade_date"].nunique()),
+            "mean_top_minus_bottom_label_return": _mean_or_nan(values),
+        }
+    return lookup
 
 
 def _factor_metadata(data_dictionary: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
@@ -312,6 +406,7 @@ def _coverage(
     require_same_as_of_trade_date: bool,
     universe_factor_names: Sequence[str],
     index_code: str | None,
+    data_source: str | None,
     require_universe_snapshot: bool,
     require_historical_pit_universe: bool,
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
@@ -331,6 +426,7 @@ def _coverage(
             require_same_as_of_trade_date=require_same_as_of_trade_date,
             universe_factor_names=universe_factor_names,
             index_code=index_code,
+            data_source=data_source,
             require_universe_snapshot=require_universe_snapshot,
             require_historical_pit_universe=require_historical_pit_universe,
         )
@@ -340,7 +436,10 @@ def _coverage(
                 "coverage may be overestimated because it is inferred from visible "
                 "factor_values rows."
             )
-        elif universe_source.startswith("factor_run_universe:") and "historical_pit" not in universe_source:
+        elif (
+            universe_source.startswith("factor_run_universe:")
+            and "historical_pit" not in universe_source
+        ):
             warnings.append(
                 f"Coverage universe snapshot for {signal_date.isoformat()} is "
                 f"{universe_source}; formal historical PIT conclusions are not supported."
@@ -365,9 +464,9 @@ def _coverage(
             )
 
     return (
-        pd.DataFrame(rows, columns=COVERAGE_COLUMNS).sort_values(
-            ["factor_name", "trade_date"]
-        ).reset_index(drop=True),
+        pd.DataFrame(rows, columns=COVERAGE_COLUMNS)
+        .sort_values(["factor_name", "trade_date"])
+        .reset_index(drop=True),
         tuple(dict.fromkeys(warnings)),
     )
 
@@ -379,6 +478,7 @@ def _universe_for_date(
     require_same_as_of_trade_date: bool,
     universe_factor_names: Sequence[str],
     index_code: str | None,
+    data_source: str | None,
     require_universe_snapshot: bool,
     require_historical_pit_universe: bool,
 ) -> tuple[set[str], str]:
@@ -395,6 +495,12 @@ def _universe_for_date(
                 "Formal validation requires historical PIT universe snapshots; "
                 f"found universe_kind={','.join(kinds) or 'unknown'} for "
                 f"{source_run_id} on {trade_date.isoformat()}."
+            )
+        if require_historical_pit_universe:
+            require_factor_run_universe_data_source(
+                snapshot,
+                data_source=data_source,
+                context="Formal validation",
             )
         codes = set(snapshot["stock_code"].dropna().astype(str).tolist())
         source = "factor_run_universe"
@@ -478,52 +584,82 @@ def _label_summary(labels: pd.DataFrame, horizons: Sequence[int]) -> pd.DataFram
     return pd.DataFrame(rows, columns=LABEL_SUMMARY_COLUMNS)
 
 
+def _mean_or_nan(values: pd.Series) -> float:
+    if values.empty:
+        return float("nan")
+    return float(values.mean())
+
+
+def _icir(values: pd.Series) -> float:
+    if len(values) < 2:
+        return float("nan")
+    std = values.std(ddof=1)
+    if pd.isna(std) or std == 0:
+        return float("nan")
+    return float(values.mean() / std)
+
+
+def _positive_ratio(values: pd.Series) -> float:
+    if values.empty:
+        return float("nan")
+    return float((values > 0).sum() / len(values))
+
+
 def _empty_result(horizons: Sequence[int]) -> FactorValidationResult:
     return FactorValidationResult(
         coverage=pd.DataFrame(columns=COVERAGE_COLUMNS),
         label_summary=_label_summary(pd.DataFrame(), horizons),
-        rank_ic=pd.DataFrame(columns=[
-            "factor_name",
-            "trade_date",
-            "horizon",
-            "valid_n",
-            "rank_ic",
-            "oriented_rank_ic",
-        ]),
-        ic_summary=pd.DataFrame(columns=[
-            "factor_name",
-            "horizon",
-            "valid_ic_dates",
-            "mean_rank_ic",
-            "rank_ic_std",
-            "icir",
-            "valid_oriented_ic_dates",
-            "mean_oriented_rank_ic",
-            "oriented_rank_ic_std",
-            "oriented_icir",
-        ]),
-        group_returns=pd.DataFrame(columns=[
-            "factor_name",
-            "trade_date",
-            "horizon",
-            "top_return",
-            "bottom_return",
-            "top_minus_bottom_return",
-            "long_short_return",
-            "valid_group_size",
-        ]),
-        decay_curve=pd.DataFrame(columns=[
-            "factor_name",
-            "horizon",
-            "valid_ic_dates",
-            "valid_group_dates",
-            "mean_rank_ic",
-            "icir",
-            "mean_oriented_rank_ic",
-            "oriented_icir",
-            "mean_top_return",
-            "mean_bottom_return",
-            "mean_top_minus_bottom_return",
-            "mean_long_short_return",
-        ]),
+        rank_ic=pd.DataFrame(
+            columns=[
+                "factor_name",
+                "trade_date",
+                "horizon",
+                "valid_n",
+                "rank_ic",
+                "oriented_rank_ic",
+            ]
+        ),
+        ic_summary=pd.DataFrame(
+            columns=[
+                "factor_name",
+                "horizon",
+                "valid_ic_dates",
+                "mean_rank_ic",
+                "rank_ic_std",
+                "icir",
+                "valid_oriented_ic_dates",
+                "mean_oriented_rank_ic",
+                "oriented_rank_ic_std",
+                "oriented_icir",
+            ]
+        ),
+        group_returns=pd.DataFrame(
+            columns=[
+                "factor_name",
+                "trade_date",
+                "horizon",
+                "top_return",
+                "bottom_return",
+                "top_minus_bottom_return",
+                "long_short_return",
+                "valid_group_size",
+            ]
+        ),
+        decay_curve=pd.DataFrame(
+            columns=[
+                "factor_name",
+                "horizon",
+                "valid_ic_dates",
+                "valid_group_dates",
+                "mean_rank_ic",
+                "icir",
+                "mean_oriented_rank_ic",
+                "oriented_icir",
+                "mean_top_return",
+                "mean_bottom_return",
+                "mean_top_minus_bottom_return",
+                "mean_long_short_return",
+            ]
+        ),
+        yearly_ic_summary=pd.DataFrame(columns=YEARLY_IC_SUMMARY_COLUMNS),
     )

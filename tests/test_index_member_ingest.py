@@ -60,8 +60,34 @@ def test_import_index_members_and_query_as_of(tmp_path: Path) -> None:
 def test_import_index_members_rejects_overlaps(tmp_path: Path) -> None:
     frame = _member_frame()
     frame.loc[2, "in_effective_date"] = "2026-01-15"
+    frame.loc[2, "in_publish_time"] = "2026-01-14 18:00:00"
     input_path = tmp_path / "bad_members.csv"
     frame.to_csv(input_path, index=False)
 
     with pytest.raises(ValueError, match="Overlapping"):
         import_index_members(input_path=input_path, db_path=tmp_path / "bad.duckdb")
+
+
+def test_import_index_members_rejects_publish_time_after_effective_date(
+    tmp_path: Path,
+) -> None:
+    frame = _member_frame()
+    frame.loc[0, "in_publish_time"] = "2026-01-02 09:30:00"
+    frame.loc[0, "in_effective_date"] = "2026-01-01"
+    input_path = tmp_path / "bad_publish.csv"
+    frame.to_csv(input_path, index=False)
+
+    with pytest.raises(ValueError, match="in_publish_time must be on or before in_effective_date"):
+        import_index_members(input_path=input_path, db_path=tmp_path / "bad_publish.duckdb")
+
+
+def test_import_index_members_rejects_incomplete_historical_exit_visibility(
+    tmp_path: Path,
+) -> None:
+    frame = _member_frame()
+    frame.loc[0, "out_publish_time"] = ""
+    input_path = tmp_path / "bad_exit.csv"
+    frame.to_csv(input_path, index=False)
+
+    with pytest.raises(ValueError, match="historical PIT exit rows require"):
+        import_index_members(input_path=input_path, db_path=tmp_path / "bad_exit.duckdb")

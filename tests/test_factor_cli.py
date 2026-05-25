@@ -58,9 +58,11 @@ def test_cli_calculate_factors_single_date_writes_factor_values(
 
     assert "Date mode: as-of 2026-06-26" in result.stdout
     assert "universe_size: 4" in result.stdout
-    assert "written_rows: 42" in result.stdout
+    assert "written_rows: 58" in result.stdout
     assert "  return_20d: 4" in result.stdout
-    assert _factor_count(fixture_db_path, "cli-single") == 42
+    assert "  volatility_20d: 4" in result.stdout
+    assert "  operating_cashflow_to_profit: 4" in result.stdout
+    assert _factor_count(fixture_db_path, "cli-single") == 58
 
     connection = duckdb.connect(str(fixture_db_path), read_only=True)
     try:

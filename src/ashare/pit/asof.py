@@ -325,6 +325,7 @@ def query_industry_classifications_as_of(
     industry_standard: str | None = None,
     version: str | None = None,
     stock_code: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return active industry rows using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -384,6 +385,9 @@ def query_industry_classifications_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code, industry_standard, version, in_date"
 
     return connection.execute(sql, params).df()
@@ -544,6 +548,7 @@ def build_as_of_snapshot(
             industry_standard=industry_standard,
             version=industry_version,
             stock_code=stock_code,
+            source=data_source,
         ),
         fundamental_reports=query_fundamental_reports_as_of(
             connection,

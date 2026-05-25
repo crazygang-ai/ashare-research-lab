@@ -35,17 +35,13 @@ def connection(fixture_db_path: Path) -> duckdb.DuckDBPyConnection:
 
 
 def _value(factors: pd.DataFrame, stock_code: str, factor_name: str) -> float:
-    rows = factors[
-        (factors["stock_code"] == stock_code) & (factors["factor_name"] == factor_name)
-    ]
+    rows = factors[(factors["stock_code"] == stock_code) & (factors["factor_name"] == factor_name)]
     assert len(rows) == 1
     return float(rows.iloc[0]["factor_value"])
 
 
 def _has_row(factors: pd.DataFrame, stock_code: str, factor_name: str) -> bool:
-    rows = factors[
-        (factors["stock_code"] == stock_code) & (factors["factor_name"] == factor_name)
-    ]
+    rows = factors[(factors["stock_code"] == stock_code) & (factors["factor_name"] == factor_name)]
     return not rows.empty
 
 
@@ -58,7 +54,7 @@ def test_calculate_factors_for_date_returns_all_phase1a4_factors(
 ) -> None:
     factors = calculate_factors_for_date(connection, "2026-06-26", index_code=INDEX_CODE)
 
-    assert set(factors["factor_name"]) == set(SUPPORTED_FACTORS)
+    assert set(SUPPORTED_FACTORS) - set(factors["factor_name"]) == {"industry_pe_ttm_percentile"}
     assert factors.attrs["universe_size"] == 4
 
 
@@ -213,6 +209,98 @@ def test_low_liquidity_uses_configured_threshold(connection: duckdb.DuckDBPyConn
 
     assert _value(default, "000001.SZ", "low_liquidity") == 1.0
     assert _value(custom, "000001.SZ", "low_liquidity") == 0.0
+
+
+def test_price_risk_and_amount_stability_factors_use_pit_observations(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    as_of = "2026-06-26"
+    factors = calculate_factors_for_date(
+        connection,
+        as_of,
+        index_code=INDEX_CODE,
+        factor_names=["volatility_20d", "max_drawdown_60d", "amount_cv_20d"],
+    )
+    prices = query_daily_prices_as_of(connection, as_of, stock_code="000001.SZ")
+    prices["adjusted_close"] = prices["close"] * prices["adj_factor"].fillna(1.0)
+
+    latest_return_window = prices.tail(21)
+    expected_volatility = latest_return_window["adjusted_close"].pct_change().dropna().std(ddof=0)
+    latest_drawdown_window = prices.tail(60)
+    drawdowns = (
+        1.0
+        - latest_drawdown_window["adjusted_close"]
+        / latest_drawdown_window["adjusted_close"].cummax()
+    )
+    latest_amount_window = prices.tail(20)
+    expected_amount_cv = (
+        latest_amount_window["amount"].std(ddof=0) / latest_amount_window["amount"].mean()
+    )
+
+    assert math.isclose(_value(factors, "000001.SZ", "volatility_20d"), expected_volatility)
+    assert math.isclose(_value(factors, "000001.SZ", "max_drawdown_60d"), drawdowns.max())
+    assert math.isclose(_value(factors, "000001.SZ", "amount_cv_20d"), expected_amount_cv)
+
+
+def test_industry_pe_percentile_uses_current_pit_industry_cross_section(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    connection.execute(
+        """
+        UPDATE industry_classifications
+        SET industry_l1 = 'Financials', industry_l2 = 'Banking'
+        WHERE stock_code = '000002.SZ'
+        """
+    )
+
+    factors = calculate_factors_for_date(
+        connection,
+        "2026-06-26",
+        index_code=INDEX_CODE,
+        factor_names=["industry_pe_ttm_percentile"],
+    )
+
+    assert _value(factors, "000001.SZ", "industry_pe_ttm_percentile") == 0.0
+    assert _value(factors, "000002.SZ", "industry_pe_ttm_percentile") == 1.0
+    assert not _has_row(factors, "000004.SZ", "industry_pe_ttm_percentile")
+
+
+def test_industry_pe_percentile_filters_industry_classification_by_data_source(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    connection.execute(
+        """
+        UPDATE industry_classifications
+        SET industry_l1 = 'Financials', industry_l2 = 'Banking'
+        WHERE stock_code = '000002.SZ'
+          AND source = 'fixture'
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO industry_classifications (
+            stock_code, industry_standard, industry_l1, industry_l2,
+            in_date, out_date, in_publish_time, in_effective_date,
+            out_publish_time, out_effective_date, version, source
+        )
+        VALUES (
+            '000002.SZ', 'fixture_l1_l2', 'Consumer', 'Durables',
+            DATE '2026-06-01', NULL, TIMESTAMP '2026-06-01 18:00:00', DATE '2026-06-02',
+            NULL, NULL, '2026Q2', 'other-source'
+        )
+        """
+    )
+
+    factors = calculate_factors_for_date(
+        connection,
+        "2026-06-26",
+        index_code=INDEX_CODE,
+        factor_names=["industry_pe_ttm_percentile"],
+        data_source="fixture",
+    )
+
+    assert _value(factors, "000001.SZ", "industry_pe_ttm_percentile") == 0.0
+    assert _value(factors, "000002.SZ", "industry_pe_ttm_percentile") == 1.0
 
 
 def test_is_st_respects_interval_effective_dates(connection: duckdb.DuckDBPyConnection) -> None:
@@ -379,6 +467,27 @@ def test_financial_factors_use_effective_date_and_latest_visible_revision(
     assert math.isclose(_value(initial, "000001.SZ", "profit_yoy"), 0.5)
     assert math.isclose(_value(revised, "000001.SZ", "revenue_yoy"), 0.4)
     assert math.isclose(_value(revised, "000001.SZ", "profit_yoy"), 0.6)
+
+
+def test_operating_cashflow_to_profit_uses_latest_visible_report(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    annual_report = calculate_factors_for_date(
+        connection,
+        "2026-04-13",
+        factor_names=["operating_cashflow_to_profit"],
+    )
+    visible = calculate_factors_for_date(
+        connection,
+        "2026-04-14",
+        factor_names=["operating_cashflow_to_profit"],
+    )
+
+    assert math.isclose(
+        _value(annual_report, "000001.SZ", "operating_cashflow_to_profit"),
+        95.0 / 120.0,
+    )
+    assert math.isclose(_value(visible, "000001.SZ", "operating_cashflow_to_profit"), 0.9)
 
 
 def test_financial_factors_skip_invalid_previous_year_bases(

@@ -18,6 +18,7 @@ from ashare.pit.asof import (
     parse_as_of_date,
     query_daily_prices_as_of,
     query_fundamental_reports_as_of,
+    query_industry_classifications_as_of,
     query_securities_as_of,
     query_st_status_as_of,
     query_universe_members_as_of,
@@ -29,14 +30,19 @@ SUPPORTED_FACTORS: tuple[str, ...] = (
     "return_20d",
     "return_60d",
     "above_ma60",
+    "volatility_20d",
+    "max_drawdown_60d",
+    "amount_cv_20d",
     "low_liquidity",
     "is_st",
     "is_suspended",
     "is_delisted",
     "pe_ttm_percentile",
     "pb_percentile",
+    "industry_pe_ttm_percentile",
     "revenue_yoy",
     "profit_yoy",
+    "operating_cashflow_to_profit",
 )
 
 FACTOR_COLUMNS = ["stock_code", "trade_date", "factor_name", "factor_value", "as_of_date"]
@@ -76,6 +82,11 @@ def calculate_factors_for_date(
 
     daily_prices = query_daily_prices_as_of(connection, parsed_date, source=data_source)
     valuation_daily = query_valuation_daily_as_of(connection, parsed_date, source=data_source)
+    industry_classifications = query_industry_classifications_as_of(
+        connection,
+        parsed_date,
+        source=data_source,
+    )
     st_status = query_st_status_as_of(connection, parsed_date)
     fundamental_reports = query_fundamental_reports_as_of(connection, parsed_date)
 
@@ -98,6 +109,7 @@ def calculate_factors_for_date(
         ),
         calculate_valuation_factors(
             valuation_daily=valuation_daily,
+            industry_classifications=industry_classifications,
             stock_codes=universe.stock_codes,
             as_of_date=parsed_date,
             factor_names=selected_factors,

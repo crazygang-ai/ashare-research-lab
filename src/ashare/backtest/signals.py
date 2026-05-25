@@ -8,7 +8,10 @@ import duckdb
 import pandas as pd
 
 from ashare.pit.asof import DateLike, parse_as_of_date, query_universe_members_as_of
-from ashare.storage.universe_snapshots import load_factor_run_universe
+from ashare.storage.universe_snapshots import (
+    load_factor_run_universe,
+    require_factor_run_universe_data_source,
+)
 
 
 HARD_FILTER_NAMES = ("is_st", "is_suspended", "is_delisted", "low_liquidity")
@@ -31,6 +34,8 @@ def build_topn_targets(
     top_n: int,
     data_dictionary: Mapping[str, object],
     data_source: str | None = None,
+    require_universe_snapshot: bool = False,
+    require_historical_pit_universe: bool = False,
 ) -> pd.DataFrame:
     """Build PIT Top N equal-weight targets from stored ``factor_values``."""
     parsed_signal_date = parse_as_of_date(signal_date)
@@ -57,6 +62,12 @@ def build_topn_targets(
         index_code=index_code,
     )
     if snapshot.empty:
+        if require_universe_snapshot:
+            raise ValueError(
+                "Formal backtest requires factor_run_universe rows for source_run_id "
+                f"{source_run_id} on {parsed_signal_date.isoformat()}; rerun "
+                "calculate-factors with a historical PIT universe before formal use."
+            )
         universe = query_universe_members_as_of(
             connection,
             parsed_signal_date,
@@ -64,6 +75,19 @@ def build_topn_targets(
             source_tag=None if data_source == "legacy" else data_source,
         )
     else:
+        kinds = sorted(str(value) for value in snapshot["universe_kind"].dropna().unique())
+        if require_historical_pit_universe and kinds != ["historical_pit"]:
+            raise ValueError(
+                "Formal backtest requires historical PIT universe snapshots; "
+                f"found universe_kind={','.join(kinds) or 'unknown'} for "
+                f"{source_run_id} on {parsed_signal_date.isoformat()}."
+            )
+        if require_historical_pit_universe:
+            require_factor_run_universe_data_source(
+                snapshot,
+                data_source=data_source,
+                context="Formal backtest",
+            )
         universe = snapshot
     universe_codes = sorted(universe["stock_code"].dropna().unique().tolist())
     if not universe_codes:

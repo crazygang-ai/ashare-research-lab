@@ -25,15 +25,21 @@ def _bundle(tmp_path: Path) -> ArtifactBundle:
     )
 
 
-def _build_gate_db(path: Path, *, include_prices: bool = True) -> None:
+def _build_gate_db(
+    path: Path,
+    *,
+    include_prices: bool = True,
+    calendar_source: str | None = "fixture",
+) -> None:
     init_db(path)
     connection = duckdb.connect(str(path))
     try:
         connection.execute(
             """
-            INSERT INTO trading_calendar (trade_date, is_open, prev_trade_date, next_trade_date)
-            VALUES ('2026-01-02', true, NULL, NULL)
-            """
+            INSERT INTO trading_calendar (trade_date, is_open, prev_trade_date, next_trade_date, source)
+            VALUES ('2026-01-02', true, NULL, NULL, ?)
+            """,
+            [calendar_source],
         )
         connection.executemany(
             """
@@ -44,8 +50,8 @@ def _build_gate_db(path: Path, *, include_prices: bool = True) -> None:
         )
         connection.executemany(
             """
-            INSERT INTO securities (stock_code, stock_name, exchange, list_date)
-            VALUES (?, ?, 'SSE', '2020-01-01')
+            INSERT INTO securities (stock_code, stock_name, exchange, list_date, source)
+            VALUES (?, ?, 'SSE', '2020-01-01', 'fixture')
             """,
             [("A", "Alpha"), ("B", "Beta")],
         )
@@ -54,9 +60,9 @@ def _build_gate_db(path: Path, *, include_prices: bool = True) -> None:
                 """
                 INSERT INTO daily_prices (
                     stock_code, trade_date, open, high, low, close, volume, amount,
-                    adj_factor, is_suspended, limit_up, limit_down
+                    adj_factor, is_suspended, limit_up, limit_down, source
                 )
-                VALUES (?, '2026-01-02', 1, 1, 1, 1, 1000, 1000, 1, false, NULL, NULL)
+                VALUES (?, '2026-01-02', 1, 1, 1, 1, 1000, 1000, 1, false, NULL, NULL, 'fixture')
                 """,
                 [("A",), ("B",)],
             )
@@ -81,6 +87,21 @@ def _build_gate_db(path: Path, *, include_prices: bool = True) -> None:
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             rows,
+        )
+    finally:
+        connection.close()
+
+
+def _set_universe_kind(path: Path, universe_kind: str) -> None:
+    connection = duckdb.connect(str(path))
+    try:
+        connection.execute(
+            """
+            UPDATE universe_members
+            SET source_tag = 'fixture',
+                universe_kind = ?
+            """,
+            [universe_kind],
         )
     finally:
         connection.close()
@@ -136,3 +157,86 @@ def test_data_quality_gate_flags_blocking_price_coverage_failure(tmp_path: Path)
     row = result.table[result.table["check_name"] == "daily_prices_coverage"].iloc[0]
     assert row["status"] == "FAIL"
     assert row["severity"] == "blocking"
+
+
+def test_data_quality_gate_filters_trading_calendar_by_data_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "gate_calendar_source.duckdb"
+    config_path = tmp_path / "audit.yaml"
+    config_path.write_text("version: phase5.v1\n", encoding="utf-8")
+    _build_gate_db(db_path, calendar_source="other-source")
+    connection = duckdb.connect(str(db_path))
+    try:
+        result = build_data_quality_gate(
+            connection,
+            as_of_date="2026-01-02",
+            source_run_id="factor-run",
+            input_artifacts=[_bundle(tmp_path)],
+            config_paths=[config_path],
+            repo_root=tmp_path,
+            index_code="LOCAL",
+            data_source="fixture",
+        )
+    finally:
+        connection.close()
+
+    row = result.table[result.table["check_name"] == "trading_calendar_open"].iloc[0]
+    assert row["status"] == "FAIL"
+    assert row["severity"] == "blocking"
+    assert "rows=0" in row["observed_value"]
+
+
+def test_data_quality_gate_warns_on_current_snapshot_universe_kind(tmp_path: Path) -> None:
+    db_path = tmp_path / "gate_snapshot.duckdb"
+    config_path = tmp_path / "audit.yaml"
+    config_path.write_text("version: phase5.v1\n", encoding="utf-8")
+    _build_gate_db(db_path)
+    _set_universe_kind(db_path, "current_snapshot")
+    connection = duckdb.connect(str(db_path))
+    try:
+        result = build_data_quality_gate(
+            connection,
+            as_of_date="2026-01-02",
+            source_run_id="factor-run",
+            input_artifacts=[_bundle(tmp_path)],
+            config_paths=[config_path],
+            repo_root=tmp_path,
+            index_code="LOCAL",
+            data_source="fixture",
+        )
+    finally:
+        connection.close()
+
+    row = result.table[result.table["check_name"] == "universe_kind_profile"].iloc[0]
+    assert row["status"] == "WARN"
+    assert row["severity"] == "warning"
+    assert row["observed_value"] == "current_snapshot=2"
+    assert result.metadata["universe_kind_counts"] == {"current_snapshot": 2}
+
+
+def test_data_quality_gate_can_require_historical_pit_universe_kind(tmp_path: Path) -> None:
+    db_path = tmp_path / "gate_snapshot_required.duckdb"
+    config_path = tmp_path / "audit.yaml"
+    config_path.write_text("version: phase5.v1\n", encoding="utf-8")
+    _build_gate_db(db_path)
+    _set_universe_kind(db_path, "current_snapshot")
+    connection = duckdb.connect(str(db_path))
+    try:
+        result = build_data_quality_gate(
+            connection,
+            as_of_date="2026-01-02",
+            source_run_id="factor-run",
+            input_artifacts=[_bundle(tmp_path)],
+            config_paths=[config_path],
+            repo_root=tmp_path,
+            index_code="LOCAL",
+            data_source="fixture",
+            gate_config={"required_universe_kind": "historical_pit"},
+        )
+    finally:
+        connection.close()
+
+    row = result.table[result.table["check_name"] == "universe_kind_profile"].iloc[0]
+    assert row["status"] == "FAIL"
+    assert row["severity"] == "blocking"
+    assert row["threshold"] == "historical_pit"
+    assert result.has_blocking_failures

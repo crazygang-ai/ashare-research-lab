@@ -120,7 +120,6 @@ conda run -n ashare-research-lab python -m compileall -q src/ashare tests
 ```text
 目标：把 Stage 1 的 exploratory 链路推进到更可信的数据基础。重点不是增加新报告，而是让 historical PIT universe、source 隔离和数据质量检查更可靠。
 
-前置条件：必须先用 Stage 1 验收 prompt 得到 PASS。否则先修 Stage 1。
 
 请先阅读：
 - docs/planning/followups.md 中 D1、D16、D23、D24、D26、D29
@@ -183,8 +182,6 @@ conda run -n ashare-research-lab python -m compileall -q src/ashare tests
 
 ```text
 目标：在数据基础更可信后，扩展个人研究可用的因子、验证切片和评分解释能力。不要为了增加数量而牺牲可解释性。
-
-前置条件：必须先用 Stage 2 验收 prompt 得到 PASS。否则先修 Stage 2。
 
 请先阅读：
 - configs/data_dictionary.yaml
@@ -251,8 +248,6 @@ conda run -n ashare-research-lab python -m compileall -q src/ashare tests
 
 ```text
 目标：把个人每天真正会看的复核体验做好，包括 daily-report、stock-report 和 watchlist。重点是复盘效率，不是营销式页面。
-
-前置条件：必须先用 Stage 3 验收 prompt 得到 PASS。否则先修 Stage 3。
 
 请先阅读：
 - src/ashare/reports/daily.py
@@ -321,8 +316,6 @@ conda run -n ashare-research-lab python -m compileall -q src/ashare tests
 ```text
 目标：让回测更接近 A 股现实，同时继续明确它只是 historical simulation，不是表现承诺。
 
-前置条件：必须先用 Stage 4 验收 prompt 得到 PASS。否则先修 Stage 4。
-
 请先阅读：
 - docs/backtest_assumptions.md
 - configs/backtest.yaml
@@ -384,8 +377,6 @@ conda run -n ashare-research-lab python -m compileall -q src/ashare tests
 
 ```text
 目标：把个人日常使用变成可长期维护的工程流程，减少“今天能跑、明天忘了怎么复现”的风险。
-
-前置条件：必须先用 Stage 5 验收 prompt 得到 PASS。否则先修 Stage 5。
 
 请先阅读：
 - .github/workflows/ci.yml

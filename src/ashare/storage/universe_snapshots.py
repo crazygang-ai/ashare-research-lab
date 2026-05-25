@@ -128,6 +128,26 @@ def load_factor_run_universe(
     return frame
 
 
+def require_factor_run_universe_data_source(
+    snapshot: pd.DataFrame,
+    *,
+    data_source: str | None,
+    context: str,
+) -> None:
+    """Fail fast when a formal run combines a universe snapshot with another source."""
+    expected = str(data_source).strip() if data_source is not None else ""
+    if snapshot.empty or not expected or expected == "legacy":
+        return
+    observed = _coalesced_snapshot_source_tags(snapshot)
+    if observed == [expected]:
+        return
+    found = ", ".join(observed) if observed else "unknown"
+    raise ValueError(
+        f"{context} requires factor_run_universe source_tag to match "
+        f"data_source={expected}; found source_tag={found}."
+    )
+
+
 def factor_run_universe_fingerprint(
     connection: duckdb.DuckDBPyConnection,
     *,
@@ -216,6 +236,21 @@ def _unique_values(frame: pd.DataFrame, column: str) -> list[str]:
     if column not in frame.columns:
         return []
     return sorted(str(value) for value in frame[column].dropna().unique().tolist())
+
+
+def _coalesced_snapshot_source_tags(frame: pd.DataFrame) -> list[str]:
+    values: set[str] = set()
+    for _, row in frame.iterrows():
+        source_tag = _clean_source_value(row.get("source_tag"))
+        source = _clean_source_value(row.get("source"))
+        values.add(source_tag or source or "unknown")
+    return sorted(values)
+
+
+def _clean_source_value(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
 
 
 def _sha256_json(value: object) -> str:
