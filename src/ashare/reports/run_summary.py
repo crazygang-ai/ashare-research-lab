@@ -88,6 +88,7 @@ def load_artifact_bundle(
             CAST(a.created_at AS VARCHAR),
             a.metadata_json,
             r.status,
+            CAST(r.as_of_date AS VARCHAR),
             r.params,
             r.config_hash,
             r.data_snapshot_id,
@@ -134,17 +135,20 @@ def load_artifact_bundle(
         warnings.append(f"Missing required {kind} artifact file: {name}")
 
     first = rows[0]
+    run_params = _json_value(first[13])
     run_metadata = {
         "run_id": first[1],
         "status": first[11],
-        "params": _json_value(first[12]),
-        "config_hash": first[13],
-        "data_snapshot_id": first[14],
-        "git_sha": first[15],
-        "worktree_clean": first[16],
-        "started_at": first[17],
-        "finished_at": first[18],
-        "error": first[19],
+        "as_of_date": first[12],
+        "source_run_id": _run_source_run_id(run_params),
+        "params": run_params,
+        "config_hash": first[14],
+        "data_snapshot_id": first[15],
+        "git_sha": first[16],
+        "worktree_clean": first[17],
+        "started_at": first[18],
+        "finished_at": first[19],
+        "error": first[20],
     }
     return ArtifactBundle(
         kind=kind,
@@ -338,6 +342,14 @@ def _artifact_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+def artifact_run_value(item: Mapping[str, Any], key: str) -> Any:
+    """Return a top-level audited run field from an ArtifactBundle metadata row."""
+    run = item.get("run")
+    if not isinstance(run, Mapping):
+        return None
+    return run.get(key)
+
+
 def _json_value(value: Any) -> Any:
     if isinstance(value, str):
         try:
@@ -345,6 +357,16 @@ def _json_value(value: Any) -> Any:
         except json.JSONDecodeError:
             return value
     return value if value is not None else {}
+
+
+def _run_source_run_id(params: Any) -> str | None:
+    if not isinstance(params, Mapping):
+        return None
+    value = params.get("source_run_id")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _escape_markdown_cell(value: str) -> str:

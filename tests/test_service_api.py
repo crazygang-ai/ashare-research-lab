@@ -40,6 +40,14 @@ def test_service_api_reads_artifacts_and_duckdb_without_writing(tmp_path: Path) 
     assert scan_latest.json()["rows"][0]["stock_code"] == "000001.SZ"
     assert client.get("/api/v1/scoring/latest").status_code == 200
     assert client.get("/api/v1/backtests/latest").status_code == 200
+    assert client.get("/api/v1/reports/daily/latest").status_code == 200
+    assert client.get("/api/v1/reports/stocks/latest").status_code == 200
+    daily_markdown = client.get("/api/v1/reports/daily/latest/markdown")
+    stock_markdown = client.get("/api/v1/reports/stocks/latest/markdown")
+    assert daily_markdown.status_code == 200
+    assert stock_markdown.status_code == 200
+    assert "Daily Research Report" in daily_markdown.text
+    assert "Stock Research Report" in stock_markdown.text
     validation = client.get("/api/v1/factors/return_20d/validation")
     assert validation.status_code == 200
     assert validation.json()["ic_summary"][0]["factor_name"] == "return_20d"
@@ -147,6 +155,36 @@ def _write_artifacts(root: Path) -> None:
     (validation / "coverage.csv").write_text("factor_name,coverage\nreturn_20d,1\n", encoding="utf-8")
     (validation / "rank_ic.csv").write_text("factor_name,horizon,rank_ic\nreturn_20d,20,0.1\n", encoding="utf-8")
     (validation / "ic_summary.csv").write_text("factor_name,horizon,icir\nreturn_20d,20,1.2\n", encoding="utf-8")
+    daily = root / "daily-report"
+    daily.mkdir()
+    (daily / "daily_report.md").write_text("# Daily Research Report\n", encoding="utf-8")
+    (daily / "daily_candidates.csv").write_text(
+        "rank,stock_code\n1,000001.SZ\n",
+        encoding="utf-8",
+    )
+    (daily / "daily_score_summary.csv").write_text(
+        "rank,stock_code,total_score\n1,000001.SZ,88\n",
+        encoding="utf-8",
+    )
+    (daily / "daily_metadata.json").write_text(
+        '{"generated_at":"2026-06-26T19:00:00+08:00","title":"Daily"}\n',
+        encoding="utf-8",
+    )
+    stock = root / "stock-report"
+    stock.mkdir()
+    (stock / "stock_report.md").write_text("# Stock Research Report\n", encoding="utf-8")
+    (stock / "stock_factor_values.csv").write_text(
+        "stock_code,factor_name,factor_value\n000001.SZ,return_20d,0.25\n",
+        encoding="utf-8",
+    )
+    (stock / "stock_score_breakdown.csv").write_text(
+        "detail_type,score_group,factor_name\nfactor,momentum,return_20d\n",
+        encoding="utf-8",
+    )
+    (stock / "stock_metadata.json").write_text(
+        '{"generated_at":"2026-06-26T19:30:00+08:00","title":"Stock"}\n',
+        encoding="utf-8",
+    )
 
 
 def _write_factor_db(db_path: Path) -> None:

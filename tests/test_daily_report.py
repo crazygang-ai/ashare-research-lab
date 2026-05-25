@@ -130,6 +130,7 @@ def test_daily_report_renders_required_sections_and_details(tmp_path: Path) -> N
             data_quality_gate=gate,
             repo_root=tmp_path,
             metadata={"run_id": "daily-run", "run_mode": "exploratory", "db_path": str(db_path)},
+            watchlist_codes=["A", "B"],
         )
     finally:
         connection.close()
@@ -137,11 +138,19 @@ def test_daily_report_renders_required_sections_and_details(tmp_path: Path) -> N
     assert "Daily Research Report" in result.markdown
     assert "Research Use Only" in result.markdown
     assert "Today Candidate Top N" in result.markdown
+    assert "Validation Gate Summary" in result.markdown
+    assert "Watchlist Summary" in result.markdown
     assert not result.daily_candidates.empty
     assert not result.daily_factor_contributions.empty
+    assert not result.daily_validation_gate_summary.empty
+    assert list(result.daily_watchlist_summary["stock_code"]) == ["A", "B"]
+    assert bool(result.daily_watchlist_summary.iloc[0]["in_candidate_top_n"]) is True
+    assert bool(result.daily_watchlist_summary.iloc[1]["in_candidate_top_n"]) is False
 
     paths = write_daily_report(result, tmp_path / "daily-output")
     for path in paths.values():
         assert path.exists()
+    assert (tmp_path / "daily-output" / "daily_validation_gate_summary.csv").exists()
+    assert (tmp_path / "daily-output" / "daily_watchlist_summary.csv").exists()
     metadata = (tmp_path / "daily-output" / "daily_metadata.json").read_text(encoding="utf-8")
     assert "daily-run" in metadata

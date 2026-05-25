@@ -15,6 +15,7 @@ from ashare.pit.asof import DateLike, parse_as_of_date
 from ashare.reports.data_quality_gate import DataQualityGateResult
 from ashare.reports.run_summary import (
     ArtifactBundle,
+    artifact_run_value,
     fail_if_exists,
     markdown_table,
     ordered_frame,
@@ -32,6 +33,8 @@ DAILY_REPORT_FILES = {
     "daily_factor_contributions": "daily_factor_contributions.csv",
     "daily_risk_summary": "daily_risk_summary.csv",
     "daily_changes": "daily_changes.csv",
+    "daily_validation_gate_summary": "daily_validation_gate_summary.csv",
+    "daily_watchlist_summary": "daily_watchlist_summary.csv",
     "daily_factor_validation_summary": "daily_factor_validation_summary.csv",
     "daily_backtest_summary": "daily_backtest_summary.csv",
     "daily_event_study_summary": "daily_event_study_summary.csv",
@@ -70,6 +73,8 @@ class DailyReportResult:
     daily_factor_contributions: pd.DataFrame
     daily_risk_summary: pd.DataFrame
     daily_changes: pd.DataFrame
+    daily_validation_gate_summary: pd.DataFrame
+    daily_watchlist_summary: pd.DataFrame
     daily_factor_validation_summary: pd.DataFrame
     daily_backtest_summary: pd.DataFrame
     daily_event_study_summary: pd.DataFrame
@@ -92,6 +97,7 @@ def build_daily_report(
     compare_scan_bundle: ArtifactBundle | None = None,
     compare_score_bundle: ArtifactBundle | None = None,
     factor_validation_bundle: ArtifactBundle | None = None,
+    watchlist_codes: Sequence[str] = (),
     recent_days: int = 30,
 ) -> DailyReportResult:
     """Build report frames and Markdown from already generated artifacts."""
@@ -102,6 +108,7 @@ def build_daily_report(
         score_metadata.get("index_code"),
     )
     top_n = _int_value(_first_non_empty(metadata.get("top_n"), score_metadata.get("top_n")), 20)
+    watchlist_code_list = _dedupe_codes(watchlist_codes)
 
     candidates = _daily_candidates(scan_bundle, score_bundle, top_n=top_n)
     score_summary = _score_summary(score_bundle, top_n=top_n)
@@ -113,6 +120,7 @@ def build_daily_report(
         compare_score_bundle=compare_score_bundle,
         top_n=top_n,
     )
+    validation_gate_summary = _validation_gate_summary(score_bundle)
     risk_summary = _risk_summary(
         connection,
         parsed_as_of=parsed_as_of,
@@ -120,6 +128,12 @@ def build_daily_report(
         stock_codes=_report_stock_codes(candidates, score_summary),
         score_bundle=score_bundle,
         recent_days=recent_days,
+    )
+    watchlist_summary = _watchlist_summary(
+        watchlist_codes=watchlist_code_list,
+        candidates=candidates,
+        score_summary=score_summary,
+        risk_summary=risk_summary,
     )
     validation_summary = _factor_validation_summary(
         factor_validation_bundle=factor_validation_bundle,
@@ -150,6 +164,8 @@ def build_daily_report(
         "index_code": index_code,
         "top_n": top_n,
         "recent_days": recent_days,
+        "watchlist_codes": watchlist_code_list,
+        "watchlist_count": len(watchlist_code_list),
         "input_artifacts": input_artifacts,
         "data_quality_gate_summary": data_quality_gate.summary,
         "data_quality_has_blocking_failures": data_quality_gate.has_blocking_failures,
@@ -161,6 +177,8 @@ def build_daily_report(
         factor_contributions=factor_contributions,
         risk_summary=risk_summary,
         changes=changes,
+        validation_gate_summary=validation_gate_summary,
+        watchlist_summary=watchlist_summary,
         validation_summary=validation_summary,
         backtest_summary=backtest_summary,
         event_summary=event_summary,
@@ -174,6 +192,8 @@ def build_daily_report(
         daily_factor_contributions=factor_contributions,
         daily_risk_summary=risk_summary,
         daily_changes=changes,
+        daily_validation_gate_summary=validation_gate_summary,
+        daily_watchlist_summary=watchlist_summary,
         daily_factor_validation_summary=validation_summary,
         daily_backtest_summary=backtest_summary,
         daily_event_study_summary=event_summary,
@@ -189,6 +209,8 @@ def render_daily_markdown(
     factor_contributions: pd.DataFrame,
     risk_summary: pd.DataFrame,
     changes: pd.DataFrame,
+    validation_gate_summary: pd.DataFrame,
+    watchlist_summary: pd.DataFrame,
     validation_summary: pd.DataFrame,
     backtest_summary: pd.DataFrame,
     event_summary: pd.DataFrame,
@@ -201,6 +223,10 @@ def render_daily_markdown(
             {
                 "kind": item.get("kind"),
                 "run_id": item.get("run_id"),
+                "input_source_run_id": artifact_run_value(item, "source_run_id"),
+                "input_as_of_date": artifact_run_value(item, "as_of_date"),
+                "input_config_hash": artifact_run_value(item, "config_hash"),
+                "input_data_snapshot_id": artifact_run_value(item, "data_snapshot_id"),
                 "requested_run_id": item.get("requested_run_id"),
                 "resolved_via": item.get("resolved_via"),
                 "artifact_ids": _artifact_ids(item),
@@ -237,6 +263,12 @@ def render_daily_markdown(
         "",
         markdown_table(gate),
         "",
+        "## Validation Gate Summary",
+        "",
+        _validation_gate_note(validation_gate_summary),
+        "",
+        markdown_table(validation_gate_summary),
+        "",
         "## Today Candidate Top N",
         "",
         markdown_table(candidates, max_rows=_top_n(metadata)),
@@ -246,6 +278,12 @@ def render_daily_markdown(
         _changes_note(changes, metadata=metadata),
         "",
         markdown_table(changes),
+        "",
+        "## Watchlist Summary",
+        "",
+        _watchlist_note(watchlist_summary, metadata=metadata),
+        "",
+        markdown_table(watchlist_summary),
         "",
         "## Composite Score Top N",
         "",
@@ -311,6 +349,11 @@ def write_daily_report(
     result.daily_factor_contributions.to_csv(paths["daily_factor_contributions"], index=False)
     result.daily_risk_summary.to_csv(paths["daily_risk_summary"], index=False)
     result.daily_changes.to_csv(paths["daily_changes"], index=False)
+    result.daily_validation_gate_summary.to_csv(
+        paths["daily_validation_gate_summary"],
+        index=False,
+    )
+    result.daily_watchlist_summary.to_csv(paths["daily_watchlist_summary"], index=False)
     result.daily_factor_validation_summary.to_csv(
         paths["daily_factor_validation_summary"],
         index=False,
@@ -413,6 +456,111 @@ def _factor_contributions(score_bundle: ArtifactBundle, score_summary: pd.DataFr
         columns,
         ["stock_code", "score_group", "factor_name"],
     )
+
+
+def _validation_gate_summary(score_bundle: ArtifactBundle) -> pd.DataFrame:
+    gate = read_artifact_csv(score_bundle, "validation_gate.csv")
+    columns = ["validation_status", "factor_count", "factors", "reasons"]
+    if gate.empty:
+        return pd.DataFrame(columns=columns)
+    status_column = "validation_status" if "validation_status" in gate.columns else "status"
+    if status_column not in gate.columns:
+        gate = gate.copy()
+        gate["validation_status"] = "UNKNOWN"
+        status_column = "validation_status"
+    rows: list[dict[str, object]] = []
+    for status, group in gate.groupby(status_column, dropna=False, sort=True):
+        factors = (
+            group["factor_name"].astype(str).tolist()
+            if "factor_name" in group.columns
+            else []
+        )
+        reasons = (
+            group["reason"].dropna().astype(str).tolist()
+            if "reason" in group.columns
+            else []
+        )
+        rows.append(
+            {
+                "validation_status": stringify(status) or "UNKNOWN",
+                "factor_count": len(group),
+                "factors": "; ".join(item for item in factors if item),
+                "reasons": "; ".join(dict.fromkeys(item for item in reasons if item)),
+            }
+        )
+    return ordered_frame(pd.DataFrame(rows), columns, ["validation_status"])
+
+
+def _watchlist_summary(
+    *,
+    watchlist_codes: Sequence[str],
+    candidates: pd.DataFrame,
+    score_summary: pd.DataFrame,
+    risk_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = [
+        "stock_code",
+        "in_candidate_top_n",
+        "candidate_rank",
+        "candidate_reason",
+        "in_score_top_n",
+        "score_rank",
+        "total_score",
+        "hard_filter_passed",
+        "risk_tip_count",
+        "latest_evidence_date",
+        "evidence_types",
+    ]
+    codes = _dedupe_codes(watchlist_codes)
+    if not codes:
+        return pd.DataFrame(columns=columns)
+    candidate_lookup = _row_lookup(candidates)
+    score_lookup = _row_lookup(score_summary)
+    risk_lookup = _risk_lookup(risk_summary)
+    rows: list[dict[str, object]] = []
+    for code in codes:
+        candidate = candidate_lookup.get(code, {})
+        score = score_lookup.get(code, {})
+        risks = risk_lookup.get(code, pd.DataFrame(columns=DAILY_RISK_COLUMNS))
+        evidence_types = (
+            "; ".join(
+                dict.fromkeys(
+                    stringify(value)
+                    for value in risks.get("evidence_type", pd.Series(dtype=object)).tolist()
+                    if stringify(value)
+                )
+            )
+            if not risks.empty
+            else ""
+        )
+        latest_evidence_date = (
+            max(
+                [
+                    stringify(value)
+                    for value in risks.get("evidence_date", pd.Series(dtype=object)).tolist()
+                    if stringify(value)
+                ],
+                default="",
+            )
+            if not risks.empty
+            else ""
+        )
+        rows.append(
+            {
+                "stock_code": code,
+                "in_candidate_top_n": bool(candidate),
+                "candidate_rank": candidate.get("rank"),
+                "candidate_reason": candidate.get("selection_reason"),
+                "in_score_top_n": bool(score),
+                "score_rank": score.get("rank"),
+                "total_score": score.get("total_score"),
+                "hard_filter_passed": score.get("hard_filter_passed"),
+                "risk_tip_count": len(risks),
+                "latest_evidence_date": latest_evidence_date,
+                "evidence_types": evidence_types,
+            }
+        )
+    return ordered_frame(pd.DataFrame(rows), columns)
 
 
 def _candidate_changes(
@@ -839,6 +987,9 @@ def _artifact_ids(item: Mapping[str, Any]) -> str:
 
 def _changes_note(changes: pd.DataFrame, *, metadata: Mapping[str, Any]) -> str:
     if changes.empty:
+        compare_note = stringify(metadata.get("compare_note"))
+        if compare_note:
+            return f"- {compare_note}"
         has_compare = bool(metadata.get("compare_scan_run_id") or metadata.get("compare_score_run_id"))
         if has_compare:
             return "- 已传入显式对比产物，未发现新增 / 移出 / 排名变化。"
@@ -848,6 +999,29 @@ def _changes_note(changes: pd.DataFrame, *, metadata: Mapping[str, Any]) -> str:
         f"- added: {int(counts.get('added', 0))}\n"
         f"- removed: {int(counts.get('removed', 0))}\n"
         f"- rank_changed: {int(counts.get('rank_changed', 0))}"
+    )
+
+
+def _validation_gate_note(validation_gate_summary: pd.DataFrame) -> str:
+    if validation_gate_summary.empty:
+        return "- validation_gate.csv 未找到或为空。"
+    rows = []
+    for row in validation_gate_summary.itertuples(index=False):
+        rows.append(f"{stringify(row.validation_status)}={stringify(row.factor_count)}")
+    return "- " + "; ".join(rows)
+
+
+def _watchlist_note(watchlist_summary: pd.DataFrame, *, metadata: Mapping[str, Any]) -> str:
+    if watchlist_summary.empty:
+        if metadata.get("watchlist_file"):
+            return "- watchlist 文件已传入，但未解析出股票代码。"
+        return "- 未传入 watchlist；本节为空。"
+    in_candidate = int(watchlist_summary["in_candidate_top_n"].fillna(False).astype(bool).sum())
+    in_score = int(watchlist_summary["in_score_top_n"].fillna(False).astype(bool).sum())
+    return (
+        f"- watchlist_count: {len(watchlist_summary)}\n"
+        f"- in_candidate_top_n: {in_candidate}\n"
+        f"- in_score_top_n: {in_score}"
     )
 
 
@@ -869,6 +1043,38 @@ def _risk_evidence_rows(risk_summary: pd.DataFrame) -> pd.DataFrame:
 
 def _top_n(metadata: Mapping[str, Any]) -> int:
     return _int_value(metadata.get("top_n"), 20)
+
+
+def _row_lookup(frame: pd.DataFrame) -> dict[str, dict[str, object]]:
+    if frame.empty or "stock_code" not in frame.columns:
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for row in frame.to_dict("records"):
+        code = stringify(row.get("stock_code"))
+        if code and code not in result:
+            result[code] = row
+    return result
+
+
+def _risk_lookup(risk_summary: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    if risk_summary.empty or "stock_code" not in risk_summary.columns:
+        return {}
+    return {
+        str(code): group.reset_index(drop=True)
+        for code, group in risk_summary.groupby(risk_summary["stock_code"].astype(str), sort=False)
+    }
+
+
+def _dedupe_codes(values: Sequence[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        code = str(value).strip()
+        if not code or code in seen:
+            continue
+        result.append(code)
+        seen.add(code)
+    return result
 
 
 def _int_value(value: object, default: int) -> int:

@@ -20,6 +20,7 @@ from ashare.pit.asof import (
 )
 from ashare.reports.run_summary import (
     ArtifactBundle,
+    artifact_run_value,
     fail_if_exists,
     markdown_table,
     ordered_frame,
@@ -167,6 +168,10 @@ def render_stock_markdown(
             {
                 "kind": item.get("kind"),
                 "run_id": item.get("run_id"),
+                "input_source_run_id": artifact_run_value(item, "source_run_id"),
+                "input_as_of_date": artifact_run_value(item, "as_of_date"),
+                "input_config_hash": artifact_run_value(item, "config_hash"),
+                "input_data_snapshot_id": artifact_run_value(item, "data_snapshot_id"),
                 "requested_run_id": item.get("requested_run_id"),
                 "resolved_via": item.get("resolved_via"),
                 "artifact_ids": _artifact_ids(item),
@@ -236,6 +241,10 @@ def render_stock_markdown(
         "## Recent Announcement Evidence",
         "",
         markdown_table(announcements, max_rows=50),
+        "",
+        "## Recent Risk Event Evidence",
+        "",
+        markdown_table(_risk_source_rows(risk_flags, "risk_event"), max_rows=50),
         "",
         "## Event Study Review",
         "",
@@ -769,6 +778,12 @@ def _stock_row_count(frame: pd.DataFrame, stock_code: str) -> int:
     if frame.empty or "stock_code" not in frame.columns:
         return 0
     return int((frame["stock_code"].astype(str) == stock_code).sum())
+
+
+def _risk_source_rows(risk_flags: pd.DataFrame, source_type: str) -> pd.DataFrame:
+    if risk_flags.empty or "source_type" not in risk_flags.columns:
+        return pd.DataFrame(columns=STOCK_RISK_COLUMNS)
+    return risk_flags[risk_flags["source_type"].astype(str) == source_type].reset_index(drop=True)
 
 
 def _first_non_empty(*values: object) -> object | None:

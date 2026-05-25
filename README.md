@@ -82,7 +82,7 @@ conda run -n ashare-research-lab ashare scan \
 
 ## 每日 HS300 个人研究链路
 
-首选入口是脚本化 workflow。它把 AkShare ingest、as-of sanity check、因子计算、单因子验证报告、候选扫描、综合评分和单股报告串成一次显式日期的个人离线研究运行：
+首选入口是脚本化 workflow。它把 AkShare ingest、as-of sanity check、因子计算、单因子验证报告、候选扫描、综合评分、日报和单股报告串成一次显式日期的个人离线研究运行：
 
 ```bash
 scripts/run_hs300_daily_research.sh --as-of 2026-05-22
@@ -92,6 +92,29 @@ scripts/run_hs300_daily_research.sh --as-of 2026-05-22
 
 ```bash
 scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --stock-code 600519.SH
+```
+
+需要每天复核多只自选股票时，传入简单文本或 CSV watchlist。CSV 推荐包含 `stock_code` 列；示例文件是 `configs/watchlist.example.csv`，不要把私人真实 watchlist 提交到 Git：
+
+```bash
+scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --watchlist-file configs/watchlist.example.csv
+```
+
+`stock-report` 也可以直接批量读取同一份 watchlist，并在输出目录下按 `stock-<CODE>` 分目录写入每只股票的报告：
+
+```bash
+conda run -n ashare-research-lab ashare stock-report \
+  --db-path data/processed/hs300_daily.duckdb \
+  --watchlist-file configs/watchlist.example.csv \
+  --as-of 2026-05-22 \
+  --source-run-id hs300-factor-20260522 \
+  --score-run-id hs300-score-20260522 \
+  --scan-run-id hs300-scan-20260522 \
+  --output-dir data/reports/generated/hs300-daily/20260522/watchlist-stock-reports \
+  --run-id hs300-stock-watchlist-20260522 \
+  --run-mode exploratory \
+  --overwrite \
+  --overwrite-run
 ```
 
 脚本不会默认使用 today，必须显式传入 `--as-of`。固定命名规范如下：
@@ -105,6 +128,7 @@ FACTOR_RUN=hs300-factor-${ASOF_NODASH}
 VALIDATION_RUN=hs300-factor-validation-${ASOF_NODASH}
 SCAN_RUN=hs300-scan-${ASOF_NODASH}
 SCORE_RUN=hs300-score-${ASOF_NODASH}
+DAILY_REPORT_RUN=hs300-daily-report-${ASOF_NODASH}
 ```
 
 每日脚本默认使用 `configs/scoring_hs300_daily_exploratory.yaml`。这个配置保留 coverage、IC 样本数和 group return 检查，但不会要求短窗口验证的 oriented IC 必须为正；`validation_gate.csv` 和单因子验证报告仍然是复盘输入，不代表因子有效性证明。
@@ -116,8 +140,20 @@ data/reports/generated/hs300-daily/${ASOF_NODASH}/data-quality/
 data/reports/generated/hs300-daily/${ASOF_NODASH}/factor-validation/
 data/reports/generated/hs300-daily/${ASOF_NODASH}/scan/
 data/reports/generated/hs300-daily/${ASOF_NODASH}/score/
+data/reports/generated/hs300-daily/${ASOF_NODASH}/daily-report/
 data/reports/generated/hs300-daily/${ASOF_NODASH}/stock-002594-SZ/
+data/reports/generated/hs300-daily/${ASOF_NODASH}/watchlist-stock-reports/
 ```
+
+每天查看时，优先打开：
+
+- 日报：`data/reports/generated/hs300-daily/${ASOF_NODASH}/daily-report/daily_report.md`
+- 候选清单：`data/reports/generated/hs300-daily/${ASOF_NODASH}/scan/candidates.csv`
+- 综合评分：`data/reports/generated/hs300-daily/${ASOF_NODASH}/score/scored_candidates.csv`
+- 单股报告：`data/reports/generated/hs300-daily/${ASOF_NODASH}/stock-002594-SZ/stock_report.md`
+- watchlist 批量报告：`data/reports/generated/hs300-daily/${ASOF_NODASH}/watchlist-stock-reports/stock-*/stock_report.md`
+
+日报会读取已有 scan、score、factor-validation 和 data quality gate 产物，不会在 `daily-report` 里隐式重算上游研究。日报包含今日候选 Top N、与上一轮同类 scan/scoring run 的排名变化、validation gate 摘要、data quality gate 摘要和 watchlist 摘要；如果找不到上一轮同类 run，会在日报里明确说明。日报和单股报告的输入 artifact 表及 JSON metadata 会记录输入 artifact 的 `run_id`、`source_run_id`、`as_of_date`、`config_hash` 和 `data_snapshot_id`，用于复盘追溯。
 
 链路默认使用 exploratory 口径，不伪装成 formal 历史 PIT 研究：
 
@@ -129,6 +165,14 @@ data/reports/generated/hs300-daily/${ASOF_NODASH}/stock-002594-SZ/
 - `composite score is not a trading instruction`
 - `factor validation forward return is a statistical label`
 - `stock report is for research review only`
+
+以下情况应停止解读候选、评分或单股报告，只保留为数据问题排查：
+
+- `daily_report.md` 或 `data_quality_gate.csv` 出现 blocking `FAIL`。
+- `validation_gate.csv` 显示关键因子覆盖率或样本数不足，且当日结论依赖这些因子。
+- `daily_metadata.json` 显示输入 run id 不是本次预期的 scan/score/factor-validation run。
+- AkShare 当前快照被用于早于真实快照日期的 `--universe-as-of`，且你试图做严格历史结论。
+- watchlist 股票缺少 factor_values、未进入本次 universe，或单股报告的 hard filter / risk_events 证据无法解释。
 
 调试和限流时可以先 dry-run 或只抓少量股票：
 

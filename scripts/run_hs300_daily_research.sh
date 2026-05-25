@@ -12,6 +12,7 @@ REPORT_ROOT="${REPORT_ROOT:-data/reports/generated/hs300-daily}"
 TOP_N="${TOP_N:-300}"
 CACHE_MODE="${CACHE_MODE:-use}"
 SCORING_CONFIG="${SCORING_CONFIG:-configs/scoring_hs300_daily_exploratory.yaml}"
+WATCHLIST_FILE="${WATCHLIST_FILE:-}"
 
 ASOF="${ASOF:-}"
 STOCK_CODE="${STOCK_CODE:-002594.SZ}"
@@ -42,6 +43,7 @@ Options:
   --validation-to DATE      Factor validation end date. Default: as-of.
   --cache-mode MODE         AkShare cache mode: use, refresh, or offline. Default: use.
   --scoring-config PATH     Scoring config. Default: configs/scoring_hs300_daily_exploratory.yaml.
+  --watchlist-file PATH     Optional text/CSV watchlist for daily summary and batch stock reports.
   --max-symbols N           Limit ingest for smoke testing; keeps --stock-code in the sample.
   --skip-ingest             Reuse existing DB rows and run downstream steps only.
   --dry-run                 Print resolved variables and commands without executing them.
@@ -51,7 +53,7 @@ Environment overrides:
   CONDA_ENV DB SOURCE INDEX_CODE UNIVERSE CACHE_DIR REPORT_ROOT TOP_N CACHE_MODE
   SCORING_CONFIG
   ASOF STOCK_CODE INGEST_FROM UNIVERSE_AS_OF FACTOR_FROM VALIDATION_FROM
-  VALIDATION_TO MAX_SYMBOLS
+  VALIDATION_TO MAX_SYMBOLS WATCHLIST_FILE
 EOF
 }
 
@@ -91,6 +93,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --scoring-config)
       SCORING_CONFIG="${2:-}"
+      shift 2
+      ;;
+    --watchlist-file)
+      WATCHLIST_FILE="${2:-}"
       shift 2
       ;;
     --max-symbols)
@@ -149,14 +155,18 @@ FACTOR_RUN="hs300-factor-${ASOF_NODASH}"
 VALIDATION_RUN="hs300-factor-validation-${ASOF_NODASH}"
 SCAN_RUN="hs300-scan-${ASOF_NODASH}"
 SCORE_RUN="hs300-score-${ASOF_NODASH}"
+DAILY_REPORT_RUN="hs300-daily-report-${ASOF_NODASH}"
 STOCK_REPORT_RUN="hs300-stock-${STOCK_CODE_SLUG}-${ASOF_NODASH}"
+WATCHLIST_REPORT_RUN="hs300-stock-watchlist-${ASOF_NODASH}"
 
 RUN_ROOT="${REPORT_ROOT}/${ASOF_NODASH}"
 QUALITY_DIR="${RUN_ROOT}/data-quality"
 VALIDATION_DIR="${RUN_ROOT}/factor-validation"
 SCAN_DIR="${RUN_ROOT}/scan"
 SCORE_DIR="${RUN_ROOT}/score"
+DAILY_REPORT_DIR="${RUN_ROOT}/daily-report"
 STOCK_REPORT_DIR="${RUN_ROOT}/stock-${STOCK_CODE_SLUG}"
+WATCHLIST_REPORT_DIR="${RUN_ROOT}/watchlist-stock-reports"
 
 run_cmd() {
   printf '+'
@@ -244,6 +254,7 @@ print_run_summary() {
   local factor_validation_report="${VALIDATION_DIR}/factor_validation_report.md"
   local candidates_csv="${SCAN_DIR}/candidates.csv"
   local scored_candidates_csv="${SCORE_DIR}/scored_candidates.csv"
+  local daily_report="${DAILY_REPORT_DIR}/daily_report.md"
   local stock_report="${STOCK_REPORT_DIR}/stock_report.md"
 
   echo
@@ -255,18 +266,27 @@ print_run_summary() {
   echo "VALIDATION_RUN=${VALIDATION_RUN}"
   echo "SCAN_RUN=${SCAN_RUN}"
   echo "SCORE_RUN=${SCORE_RUN}"
+  echo "DAILY_REPORT_RUN=${DAILY_REPORT_RUN}"
   echo "STOCK_REPORT_RUN=${STOCK_REPORT_RUN}"
+  if [[ -n "$WATCHLIST_FILE" ]]; then
+    echo "WATCHLIST_REPORT_RUN=${WATCHLIST_REPORT_RUN}"
+  fi
   echo
   echo "Key artifacts:"
   echo "data_quality_report: ${quality_report} ($(file_status "$quality_report"))"
   echo "factor_validation_report: ${factor_validation_report} ($(file_status "$factor_validation_report"))"
   echo "candidates_csv: ${candidates_csv} ($(file_status "$candidates_csv"))"
   echo "scored_candidates_csv: ${scored_candidates_csv} ($(file_status "$scored_candidates_csv"))"
+  echo "daily_report: ${daily_report} ($(file_status "$daily_report"))"
   echo "stock_report: ${stock_report} ($(file_status "$stock_report"))"
   echo "factor_validation_manifest: ${VALIDATION_DIR}/run_manifest.json ($(file_status "${VALIDATION_DIR}/run_manifest.json"))"
   echo "scan_manifest: ${SCAN_DIR}/run_manifest.json ($(file_status "${SCAN_DIR}/run_manifest.json"))"
   echo "score_manifest: ${SCORE_DIR}/run_manifest.json ($(file_status "${SCORE_DIR}/run_manifest.json"))"
+  echo "daily_report_manifest: ${DAILY_REPORT_DIR}/run_manifest.json ($(file_status "${DAILY_REPORT_DIR}/run_manifest.json"))"
   echo "stock_report_manifest: ${STOCK_REPORT_DIR}/run_manifest.json ($(file_status "${STOCK_REPORT_DIR}/run_manifest.json"))"
+  if [[ -n "$WATCHLIST_FILE" ]]; then
+    echo "watchlist_stock_reports: ${WATCHLIST_REPORT_DIR} ($(file_status "${WATCHLIST_REPORT_DIR}/run_manifest.json"))"
+  fi
   echo
   echo "CSV rows:"
   echo "candidates.csv rows: $(csv_data_rows "$candidates_csv")"
@@ -298,7 +318,12 @@ echo "FACTOR_RUN=${FACTOR_RUN}"
 echo "VALIDATION_RUN=${VALIDATION_RUN}"
 echo "SCAN_RUN=${SCAN_RUN}"
 echo "SCORE_RUN=${SCORE_RUN}"
+echo "DAILY_REPORT_RUN=${DAILY_REPORT_RUN}"
 echo "STOCK_CODE=${STOCK_CODE}"
+if [[ -n "$WATCHLIST_FILE" ]]; then
+  echo "WATCHLIST_FILE=${WATCHLIST_FILE}"
+  echo "WATCHLIST_REPORT_RUN=${WATCHLIST_REPORT_RUN}"
+fi
 echo "SCORING_CONFIG=${SCORING_CONFIG}"
 echo
 echo "Resolved windows:"
@@ -313,7 +338,11 @@ echo "QUALITY_DIR=${QUALITY_DIR}"
 echo "VALIDATION_DIR=${VALIDATION_DIR}"
 echo "SCAN_DIR=${SCAN_DIR}"
 echo "SCORE_DIR=${SCORE_DIR}"
+echo "DAILY_REPORT_DIR=${DAILY_REPORT_DIR}"
 echo "STOCK_REPORT_DIR=${STOCK_REPORT_DIR}"
+if [[ -n "$WATCHLIST_FILE" ]]; then
+  echo "WATCHLIST_REPORT_DIR=${WATCHLIST_REPORT_DIR}"
+fi
 echo
 echo "Universe note: AkShare HS300 members are a current snapshot, not strict historical PIT."
 echo
@@ -431,6 +460,28 @@ run_cmd \
   --overwrite \
   --overwrite-run
 
+DAILY_REPORT_CMD=(
+  "${ASHARE[@]}" daily-report
+  --db-path "$DB"
+  --as-of "$ASOF"
+  --source-run-id "$FACTOR_RUN"
+  --scan-run-id "$SCAN_RUN"
+  --score-run-id "$SCORE_RUN"
+  --factor-validation-run-id "$VALIDATION_RUN"
+  --index-code "$INDEX_CODE"
+  --data-source "$SOURCE"
+  --top "$TOP_N"
+  --output-dir "$DAILY_REPORT_DIR"
+  --run-id "$DAILY_REPORT_RUN"
+  --run-mode exploratory
+  --overwrite
+  --overwrite-run
+)
+if [[ -n "$WATCHLIST_FILE" ]]; then
+  DAILY_REPORT_CMD+=(--watchlist-file "$WATCHLIST_FILE")
+fi
+run_cmd "${DAILY_REPORT_CMD[@]}"
+
 run_cmd \
   "${ASHARE[@]}" stock-report \
   --db-path "$DB" \
@@ -444,6 +495,22 @@ run_cmd \
   --run-mode exploratory \
   --overwrite \
   --overwrite-run
+
+if [[ -n "$WATCHLIST_FILE" ]]; then
+  run_cmd \
+    "${ASHARE[@]}" stock-report \
+    --db-path "$DB" \
+    --watchlist-file "$WATCHLIST_FILE" \
+    --as-of "$ASOF" \
+    --source-run-id "$FACTOR_RUN" \
+    --score-run-id "$SCORE_RUN" \
+    --scan-run-id "$SCAN_RUN" \
+    --output-dir "$WATCHLIST_REPORT_DIR" \
+    --run-id "$WATCHLIST_REPORT_RUN" \
+    --run-mode exploratory \
+    --overwrite \
+    --overwrite-run
+fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
   print_run_summary

@@ -141,6 +141,22 @@ def create_app(
     def backtest_by_id(artifact_id: str) -> JSONResponse:
         return _artifact_id_response(artifact_id, "backtest", "metrics.csv")
 
+    @app.get("/api/v1/reports/daily/latest")
+    def latest_daily_report() -> JSONResponse:
+        return _artifact_kind_response("daily_report", "daily_candidates.csv")
+
+    @app.get("/api/v1/reports/daily/latest/markdown")
+    def latest_daily_report_markdown() -> Response:
+        return _latest_report_markdown_response("daily_report")
+
+    @app.get("/api/v1/reports/stocks/latest")
+    def latest_stock_report() -> JSONResponse:
+        return _artifact_kind_response("stock_report", "stock_factor_values.csv")
+
+    @app.get("/api/v1/reports/stocks/latest/markdown")
+    def latest_stock_report_markdown() -> Response:
+        return _latest_report_markdown_response("stock_report")
+
     @app.get("/api/v1/factors/{factor_name}/validation")
     def factor_validation(factor_name: str) -> JSONResponse:
         artifact = registry.latest("factor_validation")
@@ -256,6 +272,15 @@ def create_app(
         except (OSError, ValueError) as exc:
             return _error(500, "artifact_read_error", str(exc))
         return _json(payload)
+
+    def _latest_report_markdown_response(kind: str) -> Response:
+        artifact = registry.latest(kind)
+        if artifact is None:
+            return _error(404, "artifact_not_found", f"No {kind} artifact found.")
+        text = registry.read_markdown(artifact.artifact_id)
+        if text is None:
+            return _error(404, "artifact_not_found", "Markdown report not found.")
+        return Response(content=text, media_type="text/markdown; charset=utf-8")
 
     return app
 

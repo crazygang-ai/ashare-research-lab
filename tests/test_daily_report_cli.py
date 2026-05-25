@@ -107,14 +107,21 @@ def _write_text_files(directory: Path, files: dict[str, str]) -> dict[str, Path]
     return paths
 
 
-def _insert_artifact_run(db_path: Path, run_id: str, kind: str, paths: dict[str, Path]) -> None:
+def _insert_artifact_run(
+    db_path: Path,
+    run_id: str,
+    kind: str,
+    paths: dict[str, Path],
+    *,
+    as_of_date: str = "2026-01-02",
+) -> None:
     connection = duckdb.connect(str(db_path))
     started = datetime.now(timezone.utc)
     try:
         begin_run(
             connection,
             run_id=run_id,
-            as_of_date="2026-01-02",
+            as_of_date=as_of_date,
             params={"command": kind, "run_mode": "exploratory", "source_run_id": "factor-run"},
             config_hash="cfg",
             data_snapshot_id="snapshot",
@@ -146,6 +153,39 @@ def _insert_artifact_run(db_path: Path, run_id: str, kind: str, paths: dict[str,
 
 
 def _insert_input_artifacts(db_path: Path, root: Path) -> None:
+    previous_scan_paths = _write_text_files(
+        root / "previous-scan",
+        {
+            "candidate_list.md": "# Previous Candidate List\n",
+            "candidates.csv": (
+                "rank,stock_code,stock_name,industry_l1,industry_l2,selection_reason,risk_tips\n"
+                "1,B,Beta,Finance,Bank,previous,none\n"
+                "2,A,Alpha,Tech,Software,previous,none\n"
+            ),
+        },
+    )
+    previous_score_paths = _write_text_files(
+        root / "previous-score",
+        {
+            "scoring_report.md": "# Previous Scoring\n",
+            "scored_candidates.csv": (
+                "rank,stock_code,stock_name,industry_l1,industry_l2,total_score,"
+                "financial_score,valuation_score,momentum_score,event_score,risk_penalty,"
+                "hard_filter_passed,selection_reason,risk_tips\n"
+                "1,B,Beta,Finance,Bank,80,30,20,30,0,0,true,previous,none\n"
+                "2,A,Alpha,Tech,Software,70,20,20,30,0,0,true,previous,none\n"
+            ),
+            "score_breakdown.csv": "stock_code,score_group,weighted_contribution,group_score,missing_factor_count\nA,momentum,35,70,0\n",
+            "factor_normalized_scores.csv": (
+                "stock_code,factor_name,score_role,score_group,raw_factor_value,"
+                "normalized_score,factor_weight,weighted_contribution,validation_status\n"
+                "A,return_20d,positive,momentum,0.1,70,1,70,PASS\n"
+            ),
+            "hard_filter_exclusions.csv": "as_of_date,source_run_id,index_code,stock_code,hard_filter_name,factor_value,exclusion_reason\n",
+            "validation_gate.csv": "factor_name,validation_status,reason\nreturn_20d,PASS,\n",
+            "score_metadata.json": '{"index_code":"LOCAL","top_n":2,"validation_dir":""}\n',
+        },
+    )
     scan_paths = _write_text_files(
         root / "scan",
         {
@@ -200,6 +240,20 @@ def _insert_input_artifacts(db_path: Path, root: Path) -> None:
             "event_samples.csv": "event_id,stock_code,effective_date,event_type\nrisk-1,B,2026-01-02,pledge\n",
         },
     )
+    _insert_artifact_run(
+        db_path,
+        "scan-prev",
+        "scan",
+        previous_scan_paths,
+        as_of_date="2026-01-01",
+    )
+    _insert_artifact_run(
+        db_path,
+        "score-prev",
+        "scoring",
+        previous_score_paths,
+        as_of_date="2026-01-01",
+    )
     _insert_artifact_run(db_path, "scan-run", "scan", scan_paths)
     _insert_artifact_run(db_path, "score-run", "scoring", score_paths)
     _insert_artifact_run(db_path, "backtest-run", "backtest", backtest_paths)
@@ -211,6 +265,8 @@ def test_daily_report_cli_writes_report_gate_manifest_and_artifact_index(tmp_pat
     output_dir = tmp_path / "daily-output"
     _build_db(db_path)
     _insert_input_artifacts(db_path, tmp_path / "inputs")
+    watchlist = tmp_path / "watchlist.csv"
+    watchlist.write_text("stock_code,note\nA,core\nB,review\n", encoding="utf-8")
 
     result = _run_ashare(
         [
@@ -222,6 +278,7 @@ def test_daily_report_cli_writes_report_gate_manifest_and_artifact_index(tmp_pat
             "--score-run-id", "score-run",
             "--backtest-run-id", "backtest-run",
             "--event-study-run-id", "event-run",
+            "--watchlist-file", str(watchlist),
             "--output-dir", str(output_dir),
             "--run-id", "daily-run",
         ]
@@ -235,6 +292,8 @@ def test_daily_report_cli_writes_report_gate_manifest_and_artifact_index(tmp_pat
         "daily_factor_contributions.csv",
         "daily_risk_summary.csv",
         "daily_changes.csv",
+        "daily_validation_gate_summary.csv",
+        "daily_watchlist_summary.csv",
         "daily_input_artifacts.json",
         "daily_metadata.json",
         "data_quality_gate.csv",
@@ -245,6 +304,23 @@ def test_daily_report_cli_writes_report_gate_manifest_and_artifact_index(tmp_pat
     markdown = (output_dir / "daily_report.md").read_text(encoding="utf-8")
     assert "Input Artifact Ids And Run Ids" in markdown
     assert "artifact_ids" in markdown
+    assert "source_run_id" in markdown
+    assert "input_as_of_date" in markdown
+    assert "input_config_hash" in markdown
+    assert "input_data_snapshot_id" in markdown
+    assert "snapshot" in markdown
+    assert "Validation Gate Summary" in markdown
+    assert "Watchlist Summary" in markdown
+    changes = (output_dir / "daily_changes.csv").read_text(encoding="utf-8")
+    assert "rank_changed" in changes
+    metadata = json.loads((output_dir / "daily_metadata.json").read_text(encoding="utf-8"))
+    assert "scan-prev" in json.dumps(metadata, ensure_ascii=False)
+    assert "score-prev" in json.dumps(metadata, ensure_ascii=False)
+    scan_input = next(item for item in metadata["input_artifacts"] if item["run_id"] == "scan-run")
+    assert scan_input["run"]["source_run_id"] == "factor-run"
+    assert scan_input["run"]["as_of_date"] == "2026-01-02"
+    assert scan_input["run"]["config_hash"] == "cfg"
+    assert scan_input["run"]["data_snapshot_id"] == "snapshot"
 
     connection = duckdb.connect(str(db_path), read_only=True)
     try:

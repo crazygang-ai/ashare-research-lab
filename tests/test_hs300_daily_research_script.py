@@ -49,6 +49,7 @@ def test_hs300_daily_research_script_dry_run_uses_fixed_names_and_full_chain() -
         "ashare report --kind factor-validation",
         "ashare scan",
         "ashare score",
+        "ashare daily-report",
         "ashare stock-report",
     ]:
         assert command in stdout
@@ -150,6 +151,13 @@ case "$command" in
     printf 'rank,stock_code,total_score\\n1,002594.SZ,90\\n' > "$output_dir/scored_candidates.csv"
     printf '{"run_id":"score"}\\n' > "$output_dir/run_manifest.json"
     ;;
+  daily-report)
+    output_dir="$(value_for --output-dir "$@")"
+    mkdir -p "$output_dir"
+    printf '# Daily Report\\n002594.SZ\\n' > "$output_dir/daily_report.md"
+    printf 'rank,stock_code\\n1,002594.SZ\\n' > "$output_dir/daily_candidates.csv"
+    printf '{"run_id":"daily"}\\n' > "$output_dir/run_manifest.json"
+    ;;
   stock-report)
     output_dir="$(value_for --output-dir "$@")"
     mkdir -p "$output_dir"
@@ -187,6 +195,7 @@ esac
     assert "Run summary:" in stdout
     assert f"data_quality_report: {run_root / 'data-quality/data_quality_report.md'}" in stdout
     assert f"factor_validation_report: {run_root / 'factor-validation/factor_validation_report.md'}" in stdout
+    assert f"daily_report: {run_root / 'daily-report/daily_report.md'}" in stdout
     assert f"stock_report: {run_root / 'stock-002594-SZ/stock_report.md'}" in stdout
     assert "candidates.csv rows: 2" in stdout
     assert "scored_candidates.csv rows: 1" in stdout
@@ -212,3 +221,27 @@ def test_hs300_daily_research_script_includes_target_when_max_symbols_is_used() 
     )
 
     assert "--max-symbols 20 --include-symbol 002594.SZ" in result.stdout
+
+
+def test_hs300_daily_research_script_passes_watchlist_to_reports(tmp_path: Path) -> None:
+    watchlist = tmp_path / "watchlist.csv"
+    watchlist.write_text("stock_code,note\n002594.SZ,core\n600519.SH,review\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--as-of",
+            "2026-05-22",
+            "--watchlist-file",
+            str(watchlist),
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert f"--watchlist-file {watchlist}" in result.stdout
+    assert "WATCHLIST_REPORT_RUN=hs300-stock-watchlist-20260522" in result.stdout
+    assert "WATCHLIST_REPORT_DIR=data/reports/generated/hs300-daily/20260522/watchlist-stock-reports" in result.stdout

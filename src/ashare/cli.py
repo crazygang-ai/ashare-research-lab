@@ -55,6 +55,7 @@ from ashare.reports.scoring_report import (
     write_validation_failure_artifacts,
 )
 from ashare.reports.stock_report import build_stock_report, write_stock_report
+from ashare.reports.watchlist import load_watchlist_codes, stock_code_slug
 from ashare.scan.candidates import HARD_FILTER_NAMES, scan_candidates
 from ashare.scoring.config import (
     enabled_groups,
@@ -294,6 +295,54 @@ def _artifact_input_files(path: Path) -> list[Path]:
     if not path.exists() or not path.is_dir():
         return []
     return sorted(item for item in path.iterdir() if item.is_file())
+
+
+def _previous_artifact_run_id(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    kind: str,
+    before_as_of: Any,
+    exclude_run_id: str | None,
+) -> str | None:
+    params: list[object] = [kind, before_as_of]
+    exclude_clause = ""
+    if exclude_run_id:
+        exclude_clause = "AND a.run_id <> ?"
+        params.append(exclude_run_id)
+    row = connection.execute(
+        f"""
+        SELECT a.run_id
+        FROM research_artifacts a
+        LEFT JOIN research_runs r ON r.run_id = a.run_id
+        WHERE a.artifact_kind = ?
+          AND COALESCE(r.status, 'succeeded') = 'succeeded'
+          AND r.as_of_date IS NOT NULL
+          AND CAST(r.as_of_date AS DATE) < ?
+          {exclude_clause}
+        GROUP BY a.run_id, r.as_of_date, COALESCE(r.finished_at, r.started_at)
+        ORDER BY r.as_of_date DESC, COALESCE(r.finished_at, r.started_at) DESC, a.run_id DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _stock_report_codes(code: str | None, watchlist_file: Path | None) -> list[str]:
+    codes: list[str] = []
+    if code is not None and code.strip():
+        codes.append(code.strip())
+    if watchlist_file is not None:
+        codes.extend(load_watchlist_codes(watchlist_file))
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in codes:
+        stock_code = str(item).strip()
+        if not stock_code or stock_code in seen:
+            continue
+        result.append(stock_code)
+        seen.add(stock_code)
+    return result
 
 
 def _add_factor_calculation_inputs(
@@ -1982,10 +2031,15 @@ def daily_report(
     compare_as_of: str | None = typer.Option(None, "--compare-as-of"),
     compare_scan_run_id: str | None = typer.Option(None, "--compare-scan-run-id"),
     compare_score_run_id: str | None = typer.Option(None, "--compare-score-run-id"),
+    watchlist_file: Path | None = typer.Option(None, "--watchlist-file"),
     index_code: str | None = typer.Option(None, "--index-code"),
     data_source: str | None = typer.Option(None, "--data-source"),
     top: int = typer.Option(20, "--top"),
     recent_days: int = typer.Option(30, "--recent-days"),
+    compare_latest_previous: bool = typer.Option(
+        True,
+        "--compare-latest-previous/--no-compare-latest-previous",
+    ),
     allow_latest_artifacts: bool = typer.Option(
         False,
         "--allow-latest-artifacts/--no-allow-latest-artifacts",
@@ -2043,10 +2097,12 @@ def daily_report(
             "compare_as_of": compare_as_of,
             "compare_scan_run_id": compare_scan_run_id,
             "compare_score_run_id": compare_score_run_id,
+            "watchlist_file": str(watchlist_file) if watchlist_file else None,
             "index_code": index_code,
             "data_source": data_source,
             "top": top,
             "recent_days": recent_days,
+            "compare_latest_previous": compare_latest_previous,
             "allow_latest_artifacts": allow_latest_artifacts,
             "overwrite": overwrite,
             "service_config": str(service_config),
@@ -2064,6 +2120,12 @@ def daily_report(
     close_connection = not isinstance(context, AuditContext)
     try:
         repo_root = audit_conf.repo_root
+        try:
+            watchlist_codes = load_watchlist_codes(watchlist_file) if watchlist_file else []
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        if watchlist_file is not None:
+            _add_artifact_file_inputs(context, [watchlist_file])
         try:
             resolved_data_source = resolve_data_source(connection, data_source)
         except ValueError as exc:
@@ -2118,38 +2180,64 @@ def daily_report(
             if factor_validation_run_id is not None
             else None
         )
+        auto_compare_scan_run_id: str | None = None
+        auto_compare_score_run_id: str | None = None
+        compare_note = ""
+        if compare_latest_previous and compare_scan_run_id is None and compare_score_run_id is None:
+            auto_compare_scan_run_id = _previous_artifact_run_id(
+                connection,
+                kind="scan",
+                before_as_of=parsed_as_of,
+                exclude_run_id=scan_bundle.run_id,
+            )
+            auto_compare_score_run_id = _previous_artifact_run_id(
+                connection,
+                kind="scoring",
+                before_as_of=parsed_as_of,
+                exclude_run_id=score_bundle.run_id,
+            )
+            if auto_compare_scan_run_id or auto_compare_score_run_id:
+                compare_note = "已自动读取上一轮同类 scan/scoring 产物用于排名变化比较。"
+            else:
+                compare_note = "未找到早于本 as_of_date 的上一轮同类 scan/scoring run，未执行排名变化比较。"
+        resolved_compare_scan_run_id = compare_scan_run_id or auto_compare_scan_run_id
+        resolved_compare_score_run_id = compare_score_run_id or auto_compare_score_run_id
         compare_scan_bundle = (
             load_artifact_bundle(
                 connection,
                 kind="scan",
-                run_id=compare_scan_run_id,
+                run_id=resolved_compare_scan_run_id,
                 repo_root=repo_root,
                 allow_latest=False,
                 required_files=("candidates.csv",),
             )
-            if compare_scan_run_id is not None
+            if resolved_compare_scan_run_id is not None
             else None
         )
         compare_score_bundle = (
             load_artifact_bundle(
                 connection,
                 kind="scoring",
-                run_id=compare_score_run_id,
+                run_id=resolved_compare_score_run_id,
                 repo_root=repo_root,
                 allow_latest=False,
                 required_files=("scored_candidates.csv",),
             )
-            if compare_score_run_id is not None
+            if resolved_compare_score_run_id is not None
             else None
         )
         all_bundles = [
-            scan_bundle,
-            score_bundle,
-            backtest_bundle,
-            event_bundle,
-            *([factor_bundle] if factor_bundle is not None else []),
-            *([compare_scan_bundle] if compare_scan_bundle is not None else []),
-            *([compare_score_bundle] if compare_score_bundle is not None else []),
+            bundle
+            for bundle in [
+                scan_bundle,
+                score_bundle,
+                backtest_bundle,
+                event_bundle,
+                factor_bundle,
+                compare_scan_bundle,
+                compare_score_bundle,
+            ]
+            if bundle is not None and (bundle.run_id is not None or bundle.requested_run_id is not None)
         ]
         _add_artifact_file_inputs(context, bundle_input_paths(all_bundles))
         for option_name, bundle in [
@@ -2206,19 +2294,7 @@ def daily_report(
             connection,
             as_of_date=parsed_as_of,
             source_run_id=source_run_id,
-            input_artifacts=[
-                bundle
-                for bundle in [
-                    scan_bundle,
-                    score_bundle,
-                    backtest_bundle,
-                    event_bundle,
-                    *([compare_scan_bundle] if compare_scan_bundle is not None else []),
-                    *([compare_score_bundle] if compare_score_bundle is not None else []),
-                    *([factor_bundle] if factor_bundle is not None else []),
-                ]
-                if bundle is not None
-            ],
+            input_artifacts=all_bundles,
             config_paths=[audit_config, service_config, Path("configs/data_dictionary.yaml")],
             repo_root=repo_root,
             index_code=resolved_index_code,
@@ -2264,6 +2340,10 @@ def daily_report(
             "compare_as_of": parsed_compare_as_of.isoformat() if parsed_compare_as_of else None,
             "compare_scan_run_id": compare_scan_bundle.run_id if compare_scan_bundle else None,
             "compare_score_run_id": compare_score_bundle.run_id if compare_score_bundle else None,
+            "compare_note": compare_note,
+            "watchlist_file": str(watchlist_file) if watchlist_file else None,
+            "watchlist_count": len(watchlist_codes),
+            "watchlist_codes": watchlist_codes,
             "allow_latest_artifacts": allow_latest_artifacts,
             "index_code": resolved_index_code,
             "data_source": resolved_data_source,
@@ -2283,6 +2363,7 @@ def daily_report(
             data_quality_gate=gate,
             repo_root=repo_root,
             metadata=metadata,
+            watchlist_codes=watchlist_codes,
             recent_days=recent_days,
         )
         report_paths = write_daily_report(
@@ -2304,6 +2385,7 @@ def daily_report(
     typer.echo(f"source_run_id: {source_run_id}")
     typer.echo(f"run_mode: {actual_run_mode}")
     typer.echo(f"data_source: {resolved_data_source or '(unspecified)'}")
+    typer.echo(f"watchlist_count: {len(watchlist_codes)}")
     for status, count in gate.summary.items():
         typer.echo(f"data_quality_{status}: {count}")
     for key, path in {**gate_paths, **report_paths}.items():
@@ -2313,7 +2395,8 @@ def daily_report(
 
 @app.command(name="stock-report")
 def stock_report(
-    code: str = typer.Option(..., "--code"),
+    code: str | None = typer.Option(None, "--code"),
+    watchlist_file: Path | None = typer.Option(None, "--watchlist-file"),
     as_of: str = typer.Option(..., "--as-of"),
     db_path: Path = typer.Option(Path("data/processed/ashare.duckdb"), "--db-path"),
     source_run_id: str = typer.Option(..., "--source-run-id"),
@@ -2331,7 +2414,12 @@ def stock_report(
     """Generate a Phase 7 single-stock research review report."""
     try:
         parsed_as_of = parse_as_of_date(as_of)
+        stock_codes = _stock_report_codes(code, watchlist_file)
+        if not stock_codes:
+            raise click.ClickException("--code or --watchlist-file is required.")
     except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except (OSError, FileNotFoundError) as exc:
         raise click.ClickException(str(exc)) from exc
     resolved_run_id = run_id or generated_run_id("stock-report")
     context = _begin_audit(
@@ -2347,6 +2435,8 @@ def stock_report(
         source_run_id=source_run_id,
         params={
             "code": code,
+            "watchlist_file": str(watchlist_file) if watchlist_file else None,
+            "stock_codes": stock_codes,
             "as_of": as_of,
             "source_run_id": source_run_id,
             "score_run_id": score_run_id,
@@ -2368,6 +2458,8 @@ def stock_report(
     close_connection = not isinstance(context, AuditContext)
     try:
         repo_root = audit_conf.repo_root
+        if watchlist_file is not None:
+            _add_artifact_file_inputs(context, [watchlist_file])
         score_bundle = load_artifact_bundle(
             connection,
             kind="scoring",
@@ -2458,26 +2550,30 @@ def stock_report(
                     source_run_id=bundle.run_id,
                 )
         score_metadata = read_artifact_json(score_bundle, "score_metadata.json")
+        stock_code_predicate = ",".join(stock_codes)
         context.add_duckdb_table_input(
             "factor_values",
             source_run_id=source_run_id,
-            predicate=f"stock_code={code}; source_run_id={source_run_id}; as_of_date={as_of}",
+            predicate=f"stock_code IN ({stock_code_predicate}); source_run_id={source_run_id}; as_of_date={as_of}",
         )
-        context.add_duckdb_table_input("securities", predicate=f"stock_code={code}; as_of={as_of}")
+        context.add_duckdb_table_input(
+            "securities",
+            predicate=f"stock_code IN ({stock_code_predicate}); as_of={as_of}",
+        )
         context.add_duckdb_table_input(
             "industry_classifications",
-            predicate=f"stock_code={code}; as_of={as_of}",
+            predicate=f"stock_code IN ({stock_code_predicate}); as_of={as_of}",
         )
         context.add_duckdb_table_input(
-            "universe_members", predicate=f"stock_code={code}; as_of={as_of}"
+            "universe_members", predicate=f"stock_code IN ({stock_code_predicate}); as_of={as_of}"
         )
         context.add_duckdb_table_input(
-            "announcements", predicate=f"stock_code={code}; effective_date<={as_of}"
+            "announcements", predicate=f"stock_code IN ({stock_code_predicate}); effective_date<={as_of}"
         )
         context.add_duckdb_table_input(
-            "risk_events", predicate=f"stock_code={code}; effective_date<={as_of}"
+            "risk_events", predicate=f"stock_code IN ({stock_code_predicate}); effective_date<={as_of}"
         )
-        metadata = {
+        base_metadata = {
             **_audit_metadata(
                 context,
                 run_id=resolved_run_id,
@@ -2491,23 +2587,33 @@ def stock_report(
             "event_study_run_id": event_bundle.run_id if event_bundle else None,
             "index_code": score_metadata.get("index_code"),
             "data_source": score_metadata.get("data_source"),
+            "watchlist_file": str(watchlist_file) if watchlist_file else None,
+            "stock_code_count": len(stock_codes),
         }
-        report = build_stock_report(
-            connection,
-            code=code,
-            as_of_date=parsed_as_of,
-            source_run_id=source_run_id,
-            score_bundle=score_bundle,
-            scan_bundle=scan_bundle,
-            backtest_bundle=backtest_bundle,
-            event_study_bundle=event_bundle,
-            metadata=metadata,
-        )
-        paths = write_stock_report(
-            report,
-            output,
-            overwrite=overwrite or overwrite_run,
-        )
+        paths: dict[str, Path] = {}
+        use_subdirs = bool(watchlist_file) or len(stock_codes) > 1
+        for stock_code in stock_codes:
+            target_output = output / f"stock-{stock_code_slug(stock_code)}" if use_subdirs else output
+            metadata = {**base_metadata, "batch_stock_codes": stock_codes}
+            report = build_stock_report(
+                connection,
+                code=stock_code,
+                as_of_date=parsed_as_of,
+                source_run_id=source_run_id,
+                score_bundle=score_bundle,
+                scan_bundle=scan_bundle,
+                backtest_bundle=backtest_bundle,
+                event_study_bundle=event_bundle,
+                metadata=metadata,
+            )
+            report_paths = write_stock_report(
+                report,
+                target_output,
+                overwrite=overwrite or overwrite_run,
+            )
+            prefix = stock_code_slug(stock_code)
+            for key, path_value in report_paths.items():
+                paths[f"{prefix}_{key}" if use_subdirs else key] = path_value
     except click.ClickException as exc:
         _fail_audit(context, exc)
         raise
@@ -2521,7 +2627,8 @@ def stock_report(
     typer.echo("stock report is for research only and is not a trading instruction.")
     typer.echo("单股报告仅供研究复核，不是交易指令。")
     typer.echo(f"Database path: {db_path}")
-    typer.echo(f"stock_code: {code}")
+    typer.echo(f"stock_code: {', '.join(stock_codes)}")
+    typer.echo(f"watchlist_count: {len(stock_codes) if watchlist_file else 0}")
     typer.echo(f"as_of_date: {parsed_as_of.isoformat()}")
     typer.echo(f"source_run_id: {source_run_id}")
     typer.echo(f"score_run_id: {score_run_id}")
