@@ -522,6 +522,11 @@ def ingest(
     fallback_csv_dir: Path | None = typer.Option(None, "--fallback-csv-dir"),
     allow_fallback: bool = typer.Option(False, "--allow-fallback/--no-allow-fallback"),
     max_symbols: int | None = typer.Option(None, "--max-symbols"),
+    include_symbol: list[str] | None = typer.Option(
+        None,
+        "--include-symbol",
+        help="Ensure a stock code is included in the bounded sample when --max-symbols is used.",
+    ),
     quality_report_dir: Path = typer.Option(
         Path("data/reports/generated/phase1a7/data-quality"),
         "--quality-report-dir",
@@ -574,6 +579,7 @@ def ingest(
             fallback_provider=fallback_provider,
             allow_fallback=allow_fallback,
             max_symbols=max_symbols,
+            include_symbols=include_symbol,
             quality_report_dir=quality_report_dir,
             source_tag=source_tag,
             overwrite_report=overwrite_report,

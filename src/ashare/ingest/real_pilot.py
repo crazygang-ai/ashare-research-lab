@@ -73,6 +73,7 @@ def ingest_real_pilot(
     fallback_provider: MarketDataProvider | None = None,
     allow_fallback: bool = False,
     max_symbols: int | None = None,
+    include_symbols: Sequence[str] | None = None,
     quality_report_dir: str | Path | None = None,
     source_tag: str | None = None,
     overwrite_report: bool = False,
@@ -114,6 +115,7 @@ def ingest_real_pilot(
             cache_dir=cache_dir,
             cache_mode=cache_mode,
             max_symbols=max_symbols,
+            include_symbols=include_symbols,
             quality_report_dir=quality_report_dir,
             overwrite_report=overwrite_report,
             warnings=tuple(base_warnings),
@@ -138,6 +140,7 @@ def ingest_real_pilot(
             cache_dir=cache_dir,
             cache_mode=cache_mode,
             max_symbols=max_symbols,
+            include_symbols=include_symbols,
             quality_report_dir=quality_report_dir,
             overwrite_report=overwrite_report,
             warnings=tuple([*base_warnings, fallback_warning]),
@@ -159,6 +162,7 @@ def _run_provider(
     cache_dir: str | Path,
     cache_mode: str,
     max_symbols: int | None,
+    include_symbols: Sequence[str] | None,
     quality_report_dir: str | Path | None,
     overwrite_report: bool,
     warnings: tuple[str, ...],
@@ -174,6 +178,7 @@ def _run_provider(
         cache_dir=cache_dir,
         cache_mode=cache_mode,
         max_symbols=max_symbols,
+        include_symbols=include_symbols,
         warnings=warnings,
     )
 
@@ -233,6 +238,7 @@ def _prepare_provider_data(
     cache_dir: str | Path,
     cache_mode: str,
     max_symbols: int | None,
+    include_symbols: Sequence[str] | None,
     warnings: tuple[str, ...],
 ) -> _PreparedData:
     cache_events: list[dict[str, object]] = []
@@ -274,11 +280,12 @@ def _prepare_provider_data(
         for code in normalized_members_for_codes["stock_code"].dropna().unique().tolist()
         if code
     )
-    if max_symbols is not None:
-        stock_codes = stock_codes[:max_symbols]
-        runtime_warnings.append(
-            "--max-symbols applied; sampled stock_code list: " + ", ".join(stock_codes)
-        )
+    stock_codes, selection_warnings = _select_stock_codes(
+        stock_codes,
+        max_symbols=max_symbols,
+        include_symbols=include_symbols or (),
+    )
+    runtime_warnings.extend(selection_warnings)
     if not stock_codes:
         raise ProviderError("Provider returned no valid stock codes for the requested universe.")
 
@@ -383,6 +390,56 @@ def _prepare_provider_data(
         warnings=tuple(runtime_warnings),
         universe_members_mode=universe_members_mode,
     )
+
+
+def _select_stock_codes(
+    stock_codes: Sequence[str],
+    *,
+    max_symbols: int | None,
+    include_symbols: Sequence[str],
+) -> tuple[list[str], tuple[str, ...]]:
+    all_codes = [str(code).strip().upper() for code in stock_codes if str(code).strip()]
+    requested = _dedupe_requested_symbols(include_symbols)
+    available = set(all_codes)
+    selected = list(all_codes[:max_symbols] if max_symbols is not None else all_codes)
+    missing_requested = [code for code in requested if code not in available]
+
+    for code in requested:
+        if code in missing_requested or code in selected:
+            continue
+        if max_symbols is not None and len(selected) >= max_symbols:
+            replace_index = len(selected) - 1
+            for index in range(len(selected) - 1, -1, -1):
+                if selected[index] not in requested:
+                    replace_index = index
+                    break
+            selected[replace_index] = code
+        else:
+            selected.append(code)
+
+    warnings: list[str] = []
+    if max_symbols is not None:
+        warnings.append("--max-symbols applied; sampled stock_code list: " + ", ".join(selected))
+    if requested:
+        warnings.append("--include-symbol requested stock_code list: " + ", ".join(requested))
+    if missing_requested:
+        warnings.append(
+            "--include-symbol requested stock_code(s) not present in universe: "
+            + ", ".join(missing_requested)
+        )
+    return selected, tuple(warnings)
+
+
+def _dedupe_requested_symbols(include_symbols: Sequence[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for symbol in include_symbols:
+        code = str(symbol).strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        result.append(code)
+    return tuple(result)
 
 
 def _cached_fetch(
@@ -728,19 +785,7 @@ def _replace_securities(
     frame: pd.DataFrame,
     source_tag: str,
 ) -> None:
-    codes = frame[["stock_code"]].drop_duplicates()
-    connection.register("_phase1a7_codes", codes)
-    try:
-        connection.execute(
-            """
-            DELETE FROM securities
-            WHERE source = ?
-              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
-            """,
-            [source_tag],
-        )
-    finally:
-        connection.unregister("_phase1a7_codes")
+    connection.execute("DELETE FROM securities WHERE source = ?", [source_tag])
     _insert_frame(connection, "securities", frame)
 
 
@@ -750,20 +795,14 @@ def _replace_universe_members(
     source_tag: str,
     index_code: str,
 ) -> None:
-    codes = frame[["stock_code"]].drop_duplicates()
-    connection.register("_phase1a7_codes", codes)
-    try:
-        connection.execute(
-            """
-            DELETE FROM universe_members
-            WHERE source_tag = ?
-              AND index_code = ?
-              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
-            """,
-            [source_tag, index_code],
-        )
-    finally:
-        connection.unregister("_phase1a7_codes")
+    connection.execute(
+        """
+        DELETE FROM universe_members
+        WHERE source_tag = ?
+          AND index_code = ?
+        """,
+        [source_tag, index_code],
+    )
     _insert_frame(connection, "universe_members", frame)
 
 
@@ -774,20 +813,14 @@ def _replace_daily_prices(
     start_date: date,
     end_date: date,
 ) -> None:
-    codes = frame[["stock_code"]].drop_duplicates()
-    connection.register("_phase1a7_codes", codes)
-    try:
-        connection.execute(
-            """
-            DELETE FROM daily_prices
-            WHERE source = ?
-              AND trade_date BETWEEN ? AND ?
-              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
-            """,
-            [source_tag, start_date, end_date],
-        )
-    finally:
-        connection.unregister("_phase1a7_codes")
+    connection.execute(
+        """
+        DELETE FROM daily_prices
+        WHERE source = ?
+          AND trade_date BETWEEN ? AND ?
+        """,
+        [source_tag, start_date, end_date],
+    )
     _insert_frame(connection, "daily_prices", frame)
 
 
@@ -798,20 +831,14 @@ def _replace_valuation_daily(
     start_date: date,
     end_date: date,
 ) -> None:
-    codes = frame[["stock_code"]].drop_duplicates()
-    connection.register("_phase1a7_codes", codes)
-    try:
-        connection.execute(
-            """
-            DELETE FROM valuation_daily
-            WHERE source = ?
-              AND trade_date BETWEEN ? AND ?
-              AND stock_code IN (SELECT stock_code FROM _phase1a7_codes)
-            """,
-            [source_tag, start_date, end_date],
-        )
-    finally:
-        connection.unregister("_phase1a7_codes")
+    connection.execute(
+        """
+        DELETE FROM valuation_daily
+        WHERE source = ?
+          AND trade_date BETWEEN ? AND ?
+        """,
+        [source_tag, start_date, end_date],
+    )
     _insert_frame(connection, "valuation_daily", frame)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 
@@ -86,3 +87,128 @@ def test_hs300_daily_scoring_config_is_exploratory_and_loadable() -> None:
     assert config["validation_gate"]["min_valid_oriented_ic_dates"] == 1
     assert config["validation_gate"]["min_mean_oriented_rank_ic"] == -999.0
     assert config["validation_gate"]["min_oriented_icir"] == -999.0
+
+
+def test_hs300_daily_research_script_prints_completion_summary(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_conda = fake_bin / "conda"
+    fake_conda.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" != "run" ]]; then
+  echo "expected conda run" >&2
+  exit 2
+fi
+shift 3
+if [[ "$1" != "ashare" ]]; then
+  echo "expected ashare command" >&2
+  exit 2
+fi
+command="$2"
+shift 2
+
+value_for() {
+  local name="$1"
+  shift
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "$name" ]]; then
+      echo "$2"
+      return 0
+    fi
+    shift
+  done
+  return 1
+}
+
+case "$command" in
+  ingest)
+    output_dir="$(value_for --quality-report-dir "$@")"
+    mkdir -p "$output_dir"
+    printf '# Data Quality\\n' > "$output_dir/data_quality_report.md"
+    printf 'dataset,row_count\\ntrading_calendar,10\\ndaily_prices,20\\n' > "$output_dir/dataset_summary.csv"
+    ;;
+  as-of|calculate-factors)
+    ;;
+  report)
+    output_dir="$(value_for --output-dir "$@")"
+    mkdir -p "$output_dir"
+    printf '# Factor Validation\\n' > "$output_dir/factor_validation_report.md"
+    printf 'factor_name,horizon\\nreturn_20d,20\\n' > "$output_dir/ic_summary.csv"
+    printf '{"run_id":"validation"}\\n' > "$output_dir/run_manifest.json"
+    ;;
+  scan)
+    output_dir="$(value_for --output-dir "$@")"
+    mkdir -p "$output_dir"
+    printf 'rank,stock_code\\n1,002594.SZ\\n2,000001.SZ\\n' > "$output_dir/candidates.csv"
+    printf '{"run_id":"scan"}\\n' > "$output_dir/run_manifest.json"
+    ;;
+  score)
+    output_dir="$(value_for --output-dir "$@")"
+    mkdir -p "$output_dir"
+    printf 'rank,stock_code,total_score\\n1,002594.SZ,90\\n' > "$output_dir/scored_candidates.csv"
+    printf '{"run_id":"score"}\\n' > "$output_dir/run_manifest.json"
+    ;;
+  stock-report)
+    output_dir="$(value_for --output-dir "$@")"
+    mkdir -p "$output_dir"
+    printf '# Stock Report\\n002594.SZ\\n' > "$output_dir/stock_report.md"
+    printf '{"run_id":"stock"}\\n' > "$output_dir/run_manifest.json"
+    ;;
+  *)
+    echo "unknown ashare command: $command" >&2
+    exit 2
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_conda.chmod(0o755)
+
+    report_root = tmp_path / "reports"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "DB": str(tmp_path / "hs300.duckdb"),
+        "CACHE_DIR": str(tmp_path / "cache"),
+        "REPORT_ROOT": str(report_root),
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--as-of", "2026-05-22"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    run_root = report_root / "20260522"
+    stdout = result.stdout
+    assert "Run summary:" in stdout
+    assert f"data_quality_report: {run_root / 'data-quality/data_quality_report.md'}" in stdout
+    assert f"factor_validation_report: {run_root / 'factor-validation/factor_validation_report.md'}" in stdout
+    assert f"stock_report: {run_root / 'stock-002594-SZ/stock_report.md'}" in stdout
+    assert "candidates.csv rows: 2" in stdout
+    assert "scored_candidates.csv rows: 1" in stdout
+    assert "target_in_scan: yes" in stdout
+    assert "target_in_score: yes" in stdout
+    assert "target_in_stock_report: yes" in stdout
+
+
+def test_hs300_daily_research_script_includes_target_when_max_symbols_is_used() -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--as-of",
+            "2026-05-22",
+            "--max-symbols",
+            "20",
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--max-symbols 20 --include-symbol 002594.SZ" in result.stdout

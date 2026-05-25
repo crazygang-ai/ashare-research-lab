@@ -154,8 +154,18 @@ class AkShareProvider:
                     api_name="|".join(self.DAILY_PRICE_APIS),
                 )
             frame = frame.copy()
-            if "stock_code" not in frame.columns and "股票代码" not in frame.columns:
-                frame["stock_code"] = stock_code
+            frame["stock_code"] = stock_code
+            if "trade_date" not in frame.columns:
+                frame["trade_date"] = pd.NA
+            for source_column in ("date", "日期"):
+                if source_column in frame.columns:
+                    missing_trade_date = frame["trade_date"].isna() | (
+                        frame["trade_date"].astype("string").str.strip() == ""
+                    )
+                    frame.loc[missing_trade_date, "trade_date"] = frame.loc[
+                        missing_trade_date,
+                        source_column,
+                    ]
             frames.append(frame)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 

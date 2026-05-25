@@ -505,13 +505,11 @@ def _ensure_known_dataset(dataset: str) -> None:
 def _rename_columns(dataset: str, frame: pd.DataFrame) -> pd.DataFrame:
     aliases = COLUMN_ALIASES[dataset]
     rename: dict[str, str] = {}
-    used: set[str] = set()
     for column in frame.columns:
         key = _alias_key(str(column))
         canonical = aliases.get(key, aliases.get(str(column).strip(), str(column).strip()))
-        if canonical in DATASET_COLUMNS[dataset] and canonical not in used:
+        if canonical in DATASET_COLUMNS[dataset]:
             rename[column] = canonical
-            used.add(canonical)
     return frame.rename(columns=rename)
 
 

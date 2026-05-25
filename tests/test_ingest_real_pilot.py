@@ -296,6 +296,65 @@ def test_bounded_replace_is_idempotent_and_asof_reads_new_rows(tmp_path: Path) -
     assert len(snapshot.universe_members) == 2
 
 
+def test_smaller_bounded_replace_removes_stale_rows_for_same_source_tag(tmp_path: Path) -> None:
+    db_path = tmp_path / "pilot.duckdb"
+    common = {
+        "db_path": db_path,
+        "provider": FakeProvider(),
+        "universe": "hs300",
+        "index_code": "000300.SH",
+        "start_date": "2026-03-30",
+        "end_date": "2026-04-01",
+        "universe_as_of_date": "2026-03-30",
+        "cache_dir": tmp_path / "cache",
+        "source_tag": "phase1a7-shrink",
+        "quality_report_dir": tmp_path / "reports",
+        "overwrite_report": True,
+    }
+    ingest_real_pilot(max_symbols=3, **common)
+    ingest_real_pilot(max_symbols=2, cache_mode="refresh", **common)
+
+    snapshot = load_as_of_snapshot(
+        db_path,
+        "2026-04-01",
+        index_code="000300.SH",
+        data_source="phase1a7-shrink",
+    )
+
+    assert snapshot.universe_members["stock_code"].tolist() == ["000001.SZ", "000002.SZ"]
+    assert sorted(snapshot.daily_prices["stock_code"].unique().tolist()) == [
+        "000001.SZ",
+        "000002.SZ",
+    ]
+    assert sorted(snapshot.valuation_daily["stock_code"].unique().tolist()) == [
+        "000001.SZ",
+        "000002.SZ",
+    ]
+
+
+def test_max_symbols_can_include_requested_symbol_within_sample_cap(tmp_path: Path) -> None:
+    result = ingest_real_pilot(
+        db_path=tmp_path / "pilot.duckdb",
+        provider=FakeProvider(),
+        universe="hs300",
+        index_code="000300.SH",
+        start_date="2026-03-30",
+        end_date="2026-04-01",
+        universe_as_of_date="2026-03-30",
+        cache_dir=tmp_path / "cache",
+        max_symbols=2,
+        include_symbols=("000003.SZ",),
+        source_tag="phase1a7-include",
+        quality_report_dir=tmp_path / "reports",
+    )
+
+    assert result.row_counts["universe_members"] == 2
+    assert any(
+        "sampled stock_code list: 000001.SZ, 000003.SZ" in warning
+        for warning in result.warnings
+    )
+
+
 def test_overlapping_different_source_tags_are_source_isolated(tmp_path: Path) -> None:
     db_path = tmp_path / "pilot.duckdb"
     common = {

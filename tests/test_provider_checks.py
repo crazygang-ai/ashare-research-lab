@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from ashare.ingest.akshare_provider import AkShareProvider
+from ashare.ingest.contracts import normalize_dataset
 from ashare.ingest.provider_checks import ClassifiedProviderError
 
 
@@ -138,6 +139,61 @@ def test_akshare_fetch_daily_prices_uses_sina_fallback(
     assert frame["date"].tolist() == ["2026-01-02"]
     assert frame["volume"].tolist() == [1000.0]
     assert frame["amount"].tolist() == [10200.0]
+
+
+def test_akshare_fetch_daily_prices_normalizes_mixed_api_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = types.SimpleNamespace()
+    fake.__version__ = "test"
+
+    def hist(symbol: str, **kwargs: object) -> pd.DataFrame:
+        if symbol == "000001":
+            return pd.DataFrame(
+                {
+                    "日期": ["2026-01-02"],
+                    "股票代码": ["000001"],
+                    "开盘": [10.0],
+                    "最高": [10.5],
+                    "最低": [9.8],
+                    "收盘": [10.2],
+                    "成交量": [1000.0],
+                    "成交额": [10200.0],
+                }
+            )
+        raise ConnectionError("hist unavailable for this symbol")
+
+    def daily(symbol: str, **kwargs: object) -> pd.DataFrame:
+        assert symbol == "sz002594"
+        return pd.DataFrame(
+            {
+                "date": ["2026-01-02"],
+                "open": [20.0],
+                "high": [20.5],
+                "low": [19.8],
+                "close": [20.2],
+                "volume": [2000.0],
+                "amount": [40400.0],
+            }
+        )
+
+    fake.tool_trade_date_hist_sina = lambda: pd.DataFrame({"trade_date": []})
+    fake.index_stock_cons_csindex = lambda symbol: pd.DataFrame()
+    fake.stock_zh_a_hist = hist
+    fake.stock_zh_a_daily = daily
+    fake.stock_zh_valuation_baidu = lambda **kwargs: pd.DataFrame()
+    monkeypatch.setitem(sys.modules, "akshare", fake)
+
+    raw = AkShareProvider(retries=0, rate_limit_seconds=0).fetch_daily_prices(
+        ["000001.SZ", "002594.SZ"],
+        date(2026, 1, 1),
+        date(2026, 1, 3),
+    )
+    normalized = normalize_dataset("daily_prices", raw)
+
+    assert normalized["stock_code"].tolist() == ["000001.SZ", "002594.SZ"]
+    assert normalized["trade_date"].tolist() == [date(2026, 1, 2), date(2026, 1, 2)]
+    assert normalized["close"].tolist() == [10.2, 20.2]
 
 
 def test_akshare_fetch_valuation_daily_uses_baidu_fallback(

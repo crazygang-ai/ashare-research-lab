@@ -60,6 +60,36 @@ def test_normalize_dataset_coalesces_duplicate_alias_columns() -> None:
     assert frame.loc[0, "stock_code"] == "002594.SZ"
 
 
+def test_normalize_dataset_coalesces_distinct_aliases_for_same_field() -> None:
+    frame = normalize_dataset(
+        "daily_prices",
+        pd.DataFrame(
+            {
+                "股票代码": ["000001", pd.NA],
+                "stock_code": [pd.NA, "002594.SZ"],
+                "日期": ["2026-01-02", pd.NA],
+                "date": [pd.NA, "2026-01-02"],
+                "开盘": [10.0, pd.NA],
+                "open": [pd.NA, 20.0],
+                "最高": [10.5, pd.NA],
+                "high": [pd.NA, 20.5],
+                "最低": [9.8, pd.NA],
+                "low": [pd.NA, 19.8],
+                "收盘": [10.2, pd.NA],
+                "close": [pd.NA, 20.2],
+                "成交量": [1000.0, pd.NA],
+                "volume": [pd.NA, 2000.0],
+                "成交额": [10200.0, pd.NA],
+                "amount": [pd.NA, 40400.0],
+            }
+        ),
+    )
+
+    assert frame["stock_code"].tolist() == ["000001.SZ", "002594.SZ"]
+    assert frame["trade_date"].tolist() == [pd.Timestamp("2026-01-02").date()] * 2
+    assert frame["close"].tolist() == [10.2, 20.2]
+
+
 def test_validate_dataset_missing_required_columns_fails() -> None:
     frame = pd.DataFrame({"stock_code": ["000001.SZ"]})
 

@@ -136,6 +136,8 @@ scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --dry-run
 scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --max-symbols 20
 ```
 
+使用 `--max-symbols` 时，脚本会把当前 `--stock-code` 目标纳入样本上限内，确保后续单股研究报告不是由旧库里的残留数据支撑。
+
 ## 用比亚迪验证真实 AkShare 链路
 
 下面这组命令复现一个最小但完整的真实数据研究包。示例使用 `002594.SZ` 比亚迪、沪深 300、数据截止日 `2026-05-22`。

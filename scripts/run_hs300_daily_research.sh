@@ -42,7 +42,7 @@ Options:
   --validation-to DATE      Factor validation end date. Default: as-of.
   --cache-mode MODE         AkShare cache mode: use, refresh, or offline. Default: use.
   --scoring-config PATH     Scoring config. Default: configs/scoring_hs300_daily_exploratory.yaml.
-  --max-symbols N           Limit ingest to the first N symbols for smoke testing.
+  --max-symbols N           Limit ingest for smoke testing; keeps --stock-code in the sample.
   --skip-ingest             Reuse existing DB rows and run downstream steps only.
   --dry-run                 Print resolved variables and commands without executing them.
   -h, --help                Show this help.
@@ -167,6 +167,123 @@ run_cmd() {
   fi
 }
 
+file_status() {
+  if [[ -f "$1" ]]; then
+    echo "OK"
+  else
+    echo "MISSING"
+  fi
+}
+
+csv_data_rows() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    echo "MISSING"
+    return
+  fi
+  local line_count
+  line_count="$(wc -l < "$path" | tr -d ' ')"
+  if [[ "$line_count" -le 0 ]]; then
+    echo 0
+  else
+    echo $((line_count - 1))
+  fi
+}
+
+target_in_csv() {
+  local path="$1"
+  local stock_code="$2"
+  if [[ ! -f "$path" ]]; then
+    echo "MISSING"
+    return
+  fi
+  awk -F',' -v code="$stock_code" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        value = $i
+        gsub(/^"|"$/, "", value)
+        if (value == "stock_code") {
+          col = i
+        }
+      }
+      next
+    }
+    col {
+      value = $col
+      gsub(/^"|"$/, "", value)
+      if (value == code) {
+        found = 1
+      }
+    }
+    END {
+      if (!col) {
+        print "no_stock_code_column"
+      } else {
+        print found ? "yes" : "no"
+      }
+    }
+  ' "$path"
+}
+
+target_in_text() {
+  local path="$1"
+  local stock_code="$2"
+  if [[ ! -f "$path" ]]; then
+    echo "MISSING"
+    return
+  fi
+  if grep -F -q "$stock_code" "$path"; then
+    echo "yes"
+  else
+    echo "no"
+  fi
+}
+
+print_run_summary() {
+  local quality_report="${QUALITY_DIR}/data_quality_report.md"
+  local factor_validation_report="${VALIDATION_DIR}/factor_validation_report.md"
+  local candidates_csv="${SCAN_DIR}/candidates.csv"
+  local scored_candidates_csv="${SCORE_DIR}/scored_candidates.csv"
+  local stock_report="${STOCK_REPORT_DIR}/stock_report.md"
+
+  echo
+  echo "Run summary:"
+  echo "DB=${DB}"
+  echo "ASOF=${ASOF}"
+  echo "SOURCE=${SOURCE}"
+  echo "FACTOR_RUN=${FACTOR_RUN}"
+  echo "VALIDATION_RUN=${VALIDATION_RUN}"
+  echo "SCAN_RUN=${SCAN_RUN}"
+  echo "SCORE_RUN=${SCORE_RUN}"
+  echo "STOCK_REPORT_RUN=${STOCK_REPORT_RUN}"
+  echo
+  echo "Key artifacts:"
+  echo "data_quality_report: ${quality_report} ($(file_status "$quality_report"))"
+  echo "factor_validation_report: ${factor_validation_report} ($(file_status "$factor_validation_report"))"
+  echo "candidates_csv: ${candidates_csv} ($(file_status "$candidates_csv"))"
+  echo "scored_candidates_csv: ${scored_candidates_csv} ($(file_status "$scored_candidates_csv"))"
+  echo "stock_report: ${stock_report} ($(file_status "$stock_report"))"
+  echo "factor_validation_manifest: ${VALIDATION_DIR}/run_manifest.json ($(file_status "${VALIDATION_DIR}/run_manifest.json"))"
+  echo "scan_manifest: ${SCAN_DIR}/run_manifest.json ($(file_status "${SCAN_DIR}/run_manifest.json"))"
+  echo "score_manifest: ${SCORE_DIR}/run_manifest.json ($(file_status "${SCORE_DIR}/run_manifest.json"))"
+  echo "stock_report_manifest: ${STOCK_REPORT_DIR}/run_manifest.json ($(file_status "${STOCK_REPORT_DIR}/run_manifest.json"))"
+  echo
+  echo "CSV rows:"
+  echo "candidates.csv rows: $(csv_data_rows "$candidates_csv")"
+  echo "scored_candidates.csv rows: $(csv_data_rows "$scored_candidates_csv")"
+  echo
+  echo "Target ${STOCK_CODE}:"
+  echo "target_in_scan: $(target_in_csv "$candidates_csv" "$STOCK_CODE")"
+  echo "target_in_score: $(target_in_csv "$scored_candidates_csv" "$STOCK_CODE")"
+  echo "target_in_stock_report: $(target_in_text "$stock_report" "$STOCK_CODE")"
+  echo
+  echo "Research notes:"
+  echo "candidate list is not a trading instruction"
+  echo "composite score is not a trading instruction"
+  echo "stock report is for research review only"
+  echo "AkShare HS300 members are a current snapshot, not strict historical PIT."
+}
+
 echo "Daily HS300 personal research workflow"
 echo "candidate list is not a trading instruction"
 echo "composite score is not a trading instruction"
@@ -221,6 +338,7 @@ if [[ "$SKIP_INGEST" -eq 0 ]]; then
   )
   if [[ -n "$MAX_SYMBOLS" ]]; then
     INGEST_CMD+=(--max-symbols "$MAX_SYMBOLS")
+    INGEST_CMD+=(--include-symbol "$STOCK_CODE")
   fi
   run_cmd "${INGEST_CMD[@]}"
 else
@@ -324,3 +442,7 @@ run_cmd \
   --run-mode exploratory \
   --overwrite \
   --overwrite-run
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  print_run_summary
+fi
