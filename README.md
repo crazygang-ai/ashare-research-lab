@@ -80,6 +80,62 @@ conda run -n ashare-research-lab ashare scan \
 
 输出会写到 `data/processed/` 和 `data/reports/generated/`。这些目录默认被 `.gitignore` 忽略。
 
+## 每日 HS300 个人研究链路
+
+首选入口是脚本化 workflow。它把 AkShare ingest、as-of sanity check、因子计算、单因子验证报告、候选扫描、综合评分和单股报告串成一次显式日期的个人离线研究运行：
+
+```bash
+scripts/run_hs300_daily_research.sh --as-of 2026-05-22
+```
+
+默认单股报告示例是 `002594.SZ`；可以换成任意已在本次 HS300 universe 中的股票代码：
+
+```bash
+scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --stock-code 600519.SH
+```
+
+脚本不会默认使用 today，必须显式传入 `--as-of`。固定命名规范如下：
+
+```bash
+DB=data/processed/hs300_daily.duckdb
+SOURCE=akshare-hs300-daily
+ASOF=2026-05-22
+ASOF_NODASH=${ASOF//-/}
+FACTOR_RUN=hs300-factor-${ASOF_NODASH}
+VALIDATION_RUN=hs300-factor-validation-${ASOF_NODASH}
+SCAN_RUN=hs300-scan-${ASOF_NODASH}
+SCORE_RUN=hs300-score-${ASOF_NODASH}
+```
+
+每日脚本默认使用 `configs/scoring_hs300_daily_exploratory.yaml`。这个配置保留 coverage、IC 样本数和 group return 检查，但不会要求短窗口验证的 oriented IC 必须为正；`validation_gate.csv` 和单因子验证报告仍然是复盘输入，不代表因子有效性证明。
+
+默认输出目录按日期分层：
+
+```text
+data/reports/generated/hs300-daily/${ASOF_NODASH}/data-quality/
+data/reports/generated/hs300-daily/${ASOF_NODASH}/factor-validation/
+data/reports/generated/hs300-daily/${ASOF_NODASH}/scan/
+data/reports/generated/hs300-daily/${ASOF_NODASH}/score/
+data/reports/generated/hs300-daily/${ASOF_NODASH}/stock-002594-SZ/
+```
+
+链路默认使用 exploratory 口径，不伪装成 formal 历史 PIT 研究：
+
+- AkShare 指数成分是当前快照，不是严格历史 PIT 成分库。
+- `--universe-as-of` 默认等于 ingest 起点；如果早于真实快照日期，本质是当前快照静态回填，有幸存者偏差。
+- 严格历史研究或正式回测需要 `historical_pit` universe。
+- `candidate list is not a trading instruction`
+- `composite score is not a trading instruction`
+- `factor validation forward return is a statistical label`
+- `stock report is for research review only`
+
+调试和限流时可以先 dry-run 或只抓少量股票：
+
+```bash
+scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --dry-run
+scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --max-symbols 20
+```
+
 ## 用比亚迪验证真实 AkShare 链路
 
 下面这组命令复现一个最小但完整的真实数据研究包。示例使用 `002594.SZ` 比亚迪、沪深 300、数据截止日 `2026-05-22`。

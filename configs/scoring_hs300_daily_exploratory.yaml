@@ -1,0 +1,107 @@
+# Exploratory daily HS300 scoring config.
+#
+# This keeps coverage and minimum IC sample checks, but does not require the
+# short rolling validation window to have positive oriented IC before producing
+# a composite research score. The validation artifacts remain part of the score
+# report and must be reviewed; this config is not for formal PIT research.
+version: hs300_daily_exploratory.v1
+
+score:
+  top_n: 20
+  min_available_factor_weight: 0.5
+
+validation_gate:
+  mode: non_strict
+  required_horizons: [20]
+  min_coverage: 0.2
+  min_valid_oriented_ic_dates: 1
+  min_mean_oriented_rank_ic: -999.0
+  min_oriented_icir: -999.0
+  require_group_return_rows: true
+
+normalization:
+  method: percentile_rank
+  output_min: 0.0
+  output_max: 100.0
+  single_observation_score: 50.0
+  all_equal_score: 50.0
+  tie_method: average
+  industry_neutral:
+    enabled: false
+
+hard_filters:
+  is_st:
+    enabled: true
+    pass_value: 0.0
+    missing: exclude
+  is_suspended:
+    enabled: true
+    pass_value: 0.0
+    missing: exclude
+  is_delisted:
+    enabled: true
+    pass_value: 0.0
+    missing: exclude
+  low_liquidity:
+    enabled: true
+    pass_value: 0.0
+    missing: exclude
+
+groups:
+  financial:
+    enabled: true
+    required: false
+    weight: 0.30
+    factors:
+      revenue_yoy:
+        enabled: true
+        weight: 0.50
+      profit_yoy:
+        enabled: true
+        weight: 0.50
+
+  valuation:
+    enabled: true
+    required: false
+    weight: 0.30
+    factors:
+      pe_ttm_percentile:
+        enabled: true
+        weight: 0.50
+      pb_percentile:
+        enabled: true
+        weight: 0.50
+
+  momentum:
+    enabled: true
+    required: false
+    weight: 0.40
+    factors:
+      return_20d:
+        enabled: true
+        weight: 0.50
+      above_ma60:
+        enabled: true
+        weight: 0.50
+
+  event:
+    enabled: false
+    required: false
+    weight: 0.0
+    factors: {}
+
+risk_penalty:
+  enabled: true
+  max_penalty: 15.0
+  factors: {}
+
+diagnostics:
+  sensitivity:
+    enabled: true
+    perturbation_pct: 0.10
+    top_n: 20
+  yearly_stability:
+    enabled: true
+    signal_frequency: month_end
+    horizons: [20]
+    min_signal_dates_per_year: 1
