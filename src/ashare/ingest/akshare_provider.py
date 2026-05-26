@@ -17,7 +17,6 @@ from ashare.ingest.provider_checks import (
     classify_exception,
     require_dataframe,
 )
-from ashare.ingest.providers import ProviderError
 
 
 class AkShareProvider:

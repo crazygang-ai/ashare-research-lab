@@ -88,6 +88,8 @@ conda run -n ashare-research-lab ashare scan \
 scripts/run_hs300_daily_research.sh --as-of 2026-05-22
 ```
 
+个人长期维护手册见 [docs/personal_maintenance.md](docs/personal_maintenance.md)，包含每日运行、每周复核、每月备份、失败定位、服务边界、真实 LLM 启用条件和永远不提交的文件清单。
+
 默认单股报告示例是 `002594.SZ`；可以换成任意已在本次 HS300 universe 中的股票代码：
 
 ```bash

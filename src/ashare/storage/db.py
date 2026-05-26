@@ -10,6 +10,15 @@ from ashare.storage.migrator import (
     apply_migrations,
 )
 
+__all__ = [
+    "CURRENT_SCHEMA_DESCRIPTION",
+    "CURRENT_SCHEMA_VERSION",
+    "connect",
+    "default_schema_path",
+    "ensure_schema_columns",
+    "init_db",
+]
+
 REQUIRED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "securities": (
         ("delist_publish_time", "TIMESTAMP"),

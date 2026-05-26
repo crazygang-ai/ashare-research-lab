@@ -75,7 +75,23 @@ def test_followups_do_not_keep_phase8_resolved_items_as_open_debt() -> None:
         "daily_prices`、`securities`、`trading_calendar` 没有 `source` 字段",
         "历史沪深 300 PIT 成分库尚未落地",
         "AkShare provider 仍是试点薄封装",
+        "回测暂不处理 A 股 100 股整数手和零股卖出细节",
     ]
 
     stale = [phrase for phrase in stale_phrases if phrase in text]
     assert not stale
+
+
+def test_docs_do_not_reintroduce_resolved_followup_titles() -> None:
+    stale_titles = [
+        "回测暂不处理 A 股 100 股整数手和零股卖出细节",
+    ]
+
+    offenders: list[tuple[str, str]] = []
+    for path in (ROOT / "docs").rglob("*.md"):
+        text = path.read_text(encoding="utf-8")
+        for title in stale_titles:
+            if title in text:
+                offenders.append((str(path.relative_to(ROOT)), title))
+
+    assert not offenders

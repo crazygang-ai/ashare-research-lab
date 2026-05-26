@@ -32,6 +32,11 @@ conda run -n ashare-research-lab python -m pip install -e .
 
 ## Common Workflow
 
+For the personal long-running local workflow, first check `docs/personal_maintenance.md`.
+It records the daily run, weekly review, monthly DuckDB/cache backup, failure triage,
+local read-only service boundary, real LLM enablement gate, and files that must not be
+committed.
+
 Build deterministic fixtures:
 
 ```bash

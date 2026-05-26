@@ -3,8 +3,12 @@ data/processed/
 data/snapshots/
 data/reports/generated/
 data/service/
+data/cache/
+data/backups/
 tests/fixtures/generated/
 *.duckdb
+*.duckdb.wal
+*.duckdb.tmp
 configs/watchlist*.csv
 configs/watchlist*.txt
 !configs/watchlist.example.csv

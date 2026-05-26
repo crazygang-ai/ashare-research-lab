@@ -14,13 +14,21 @@
 
 - 已解决: D2 增加 `factor_values` migration 预检、DuckDB unique index 与写入层 fail-fast 共同治理；重复键会在旧库升级或写入时明确失败。
 - 已解决: D5 建立 `src/ashare/storage/migrations/` 与 `schema_version` 连续版本记录；`init_db` 会按序幂等应用 migration。
-- 已解决: D13 增加最小 GitHub Actions CI，覆盖 Conda 环境、editable install、data dictionary 生成和 `pytest -q`。
+- 已解决: D13 增加 GitHub Actions CI，覆盖 Conda 环境、editable install、data dictionary 生成一致性、`compileall`、`ruff check .` 和 `pytest -q`。
 - 已解决: D15 的 `data/raw` 与 `data/snapshots` `.gitkeep` 已存在，不再作为待办债务保留。
 - 已解决: D16 增加 `factor_run_universe`，`calculate-factors` 写入显式 universe 分母，验证、评分、回测和日报 gate 优先使用该快照。
 - 已解决: D23 为 `daily_prices`、`securities`、`trading_calendar` 增加 `source` 隔离，真实 pilot 的 bounded replace 限定在同一 source / source_tag 内。
 - 已解决: D24 增加 `ingest-index-members` CSV / Parquet 入口，可导入 historical PIT 成分并标记 `current_snapshot`。
 - 已解决: D26 增加 AkShare capability check、字段映射版本、基础重试 / 限速和可分类 provider 错误。
 - 仍保留: timestamp 级 PIT、验证 / 回测 / 评分明细结果表、生产级查询筛选、商业级历史成分源、公告真实源、监控告警和多用户权限仍不在 Phase 8 内完成。
+
+## 个人维护流程更新
+
+- 已解决: 新增 `docs/personal_maintenance.md`，明确每日运行、每周复核、每月 DuckDB / cache 备份、失败定位、永远不提交文件、服务边界和真实 LLM 启用门槛。
+- 已解决: `.gitignore` 覆盖 DuckDB、DuckDB WAL / tmp、cache、snapshot、生成报告、service 日志、备份目录和私人 watchlist，减少本地生成产物误提交风险。
+- 已解决: CI 在 editable install、data dictionary 生成一致性和 `pytest` 基础上增加 `compileall` 与 `ruff check .`。
+- 决策: 个人服务化只保留 `127.0.0.1` 本地只读查询；公网生产部署、RBAC、交易接口、券商接口和自动交易不是当前目标。
+- 决策: 真实 LLM 默认不触发；只有配置、成本预算、证据定位和 schema 校验都准备好后，才允许单独启用。
 
 ## Phase 6 更新
 
@@ -115,11 +123,11 @@
 - 决策: 后续改为从 fixture builder 暴露的样本索引或查询结果推导关键日期。
 - 关联: Phase 1a-3.5 PIT 测试。
 
-### D13. 最小 CI 已落地，仍未覆盖 lint / type check
+### D13. CI 已覆盖核心离线门槛，仍未覆盖 type check / coverage
 
-- 现状: Phase 8 已增加 GitHub Actions，运行 Conda 环境创建、`python -m pip install -e .`、`python docs/build_data_dictionary.py` 和 `pytest -q`。
+- 现状: GitHub Actions 运行 Conda 环境创建、`python -m pip install -e .`、`python docs/build_data_dictionary.py`、生成文档 diff 检查、`python -m compileall -q src/ashare tests`、`ruff check .` 和 `pytest -q`。
 - 触发: 多人协作、长期分支开发或单因子验证统计继续扩展后，未运行验收命令的提交可能进入主线并造成产物漂移。
-- 决策: CI 先保护核心离线行为，不默认触发真实 AkShare 网络 smoke；后续再补 ruff、mypy、coverage 或更细的 artifact drift 检查。
+- 决策: CI 保护核心离线行为，不默认触发真实 AkShare 网络 smoke；后续再补 mypy、coverage 或更细的 artifact drift 检查。
 - 关联: Plan 第 20 节测试要求。
 
 ### D18. 单因子验证结果未持久化
@@ -192,7 +200,7 @@
 - 决策: 本 phase 不实现公司行为现金流；后续接入可靠公司行为表后，再统一定义组合持仓、现金和复权价格之间的账务关系。
 - 关联: Plan 第 12 节回测假设；`docs/backtest_assumptions.md`。
 
-### D28. 回测暂不处理 A 股 100 股整数手和零股卖出细节
+### D28. A 股数量规则已补基础约束，仍缺更细交易所撮合模型
 
 - 现状: 已在 Phase 8 后补齐基础 A 股数量规则：买入按 `trading_rules.board_lot_size` 向下舍入到 100 股整数手；卖出按整数手向下舍入，并可按 `allow_odd_lot_sell` 一次性卖出未拆分的零股余额。无法形成一手或完整零股块的订单会在 `trade_ledger.csv` 中记录 `reject_reason = below_board_lot`。
 - 触发: 当回测资金规模较小、目标权重较细或需要模拟真实交易订单数量时，整数手约束会影响可成交数量、现金余额和跟踪误差。
@@ -390,16 +398,9 @@
 
 ## 低优先
 
-### D14. 无 pre-commit / lint hook
+### D14. 无 pre-commit / format hook
 
-- 现状: `pyproject.toml` 有 ruff / mypy 配置片段，但没有 pre-commit、lint hook 或统一格式化入口。
-- 触发: Python 文件增多或 CI 落地后，导入顺序、行宽和类型注解风格会逐步漂移，开发者也会更晚发现格式问题。
-- 决策: 暂不接 pre-commit；后续可在 CI 之后补最小 ruff/format hook。
+- 现状: `pyproject.toml` 有 ruff / mypy 配置片段，CI 已运行 `ruff check .`，但没有 pre-commit、lint hook 或统一格式化入口。
+- 触发: Python 文件增多后，开发者可能到 CI 才发现格式或导入顺序问题。
+- 决策: 暂不接 pre-commit；后续可补最小 ruff format / pre-commit hook。
 - 关联: D13。
-
-### D15. data/raw、data/snapshots .gitkeep 已存在
-
-- 现状: `data/raw/.gitkeep` 与 `data/snapshots/.gitkeep` 已存在，新 clone 后目录会保留。
-- 触发: 文档、脚本或用户操作假定这些目录已存在时，会出现路径错误或额外手工创建步骤，并影响真实数据快照接入前的 onboarding。
-- 决策: 该目录占位问题已解决；后续真实数据快照策略仍应避免提交 DuckDB、cache、报告正文或大体积原始数据。
-- 关联: Plan 第 5 节目录结构。

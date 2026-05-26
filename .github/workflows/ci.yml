@@ -29,7 +29,15 @@ jobs:
           "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab python docs/build_data_dictionary.py
 
       - name: Check generated docs
-        run: git diff --exit-code docs/data_dictionary.md
+        run: git diff --exit-code docs/data_dictionary.md docs/factor_definitions.md
+
+      - name: Compile Python
+        run: |
+          "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab python -m compileall -q src/ashare tests
+
+      - name: Lint
+        run: |
+          "$MAMBA_EXE" run -r "$MAMBA_ROOT_PREFIX" -n ashare-research-lab ruff check .
 
       - name: Test
         env:
