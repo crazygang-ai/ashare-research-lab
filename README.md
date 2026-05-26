@@ -48,7 +48,7 @@ pytest -q
 
 ## 一分钟离线自检
 
-这条链路不访问外网，适合先确认开发环境和核心流程正常：
+这条链路不访问外网，适合先确认开发环境和核心流程正常。自检关注命令是否成功、DuckDB 是否写入、报告文件是否生成；fixture 样本很小，候选清单可能因为 hard filters 或可用因子不足而为空，这不代表主链路失败：
 
 ```bash
 conda run -n ashare-research-lab python scripts/build_fixtures.py \
@@ -163,7 +163,7 @@ data/reports/generated/hs300-daily/${ASOF_NODASH}/watchlist-stock-reports/
 - 单股报告：`data/reports/generated/hs300-daily/${ASOF_NODASH}/stock-002594-SZ/stock_report.md`
 - watchlist 批量报告：`data/reports/generated/hs300-daily/${ASOF_NODASH}/watchlist-stock-reports/stock-*/stock_report.md`
 
-日报会读取已有 scan、score、factor-validation 和 data quality gate 产物，不会在 `daily-report` 里隐式重算上游研究。日报包含今日候选 Top N、与上一轮同类 scan/scoring run 的排名变化、validation gate 摘要、data quality gate 摘要和 watchlist 摘要；如果找不到上一轮同类 run，会在日报里明确说明。日报和单股报告的输入 artifact 表及 JSON metadata 会记录输入 artifact 的 `run_id`、`source_run_id`、`as_of_date`、`config_hash` 和 `data_snapshot_id`，用于复盘追溯。
+日报会读取已有 scan、score 和 factor-validation 产物，并在 `daily-report` 输出目录下生成本轮 `data_quality_gate.csv` / `data_quality_gate.json`。它不会在 `daily-report` 里隐式重算 scan、score 或 factor-validation。日报包含今日候选 Top N、与上一轮同类 scan/scoring run 的排名变化、validation gate 摘要、data quality gate 摘要和 watchlist 摘要；如果找不到上一轮同类 run，会在日报里明确说明。日报和单股报告的输入 artifact 表及 JSON metadata 会记录输入 artifact 的 `run_id`、`source_run_id`、`as_of_date`、`config_hash` 和 `data_snapshot_id`，用于复盘追溯。
 
 链路默认使用 exploratory 口径，不伪装成 formal 历史 PIT 研究：
 
@@ -192,6 +192,8 @@ scripts/run_hs300_daily_research.sh --as-of 2026-05-22 --max-symbols 20
 ```
 
 使用 `--max-symbols` 时，脚本会把当前 `--stock-code` 目标纳入样本上限内，确保后续单股研究报告不是由旧库里的残留数据支撑。
+
+`--max-symbols` 只适合 smoke / 调试。它生成的是样本内候选和样本内综合评分，例如 `--max-symbols 20` 的排名只在这 20 只股票之间可比，不能当作全量 HS300 排名解读。需要全量研究包时，去掉 `--max-symbols`，并建议使用独立的 `DB` / `REPORT_ROOT`，避免 smoke 产物和全量产物混在一起。
 
 ## 用比亚迪验证真实 AkShare 链路
 

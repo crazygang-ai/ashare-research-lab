@@ -24,6 +24,7 @@
 - AkShare 指数成分是当前快照，不是严格历史 PIT 成分库。
 - `--universe-as-of` 早于真实快照日期时，本质是当前成分快照静态回填，有幸存者偏差。
 - 严格历史研究或正式回测需要 `historical_pit` universe。
+- `--max-symbols` 只用于 smoke / 调试；候选和评分排名只在样本内可比，不能解释为全量 HS300 研究结果。
 - 生成在 `data/` 下的 DuckDB、cache、report、snapshot 默认不入 Git。
 
 ## 开始工作前
@@ -105,6 +106,8 @@ conda run -n ashare-research-lab python -c "from datetime import date; from asha
 4. 查 `validation_gate.csv`，确认哪些因子被跳过。
 5. 查 `score_breakdown.csv` 和单股 `stock_score_breakdown.csv`。
 
+解释 smoke run 时要明确样本边界：`--max-symbols 20` 生成的 `candidates.csv` / `scored_candidates.csv` 只有 20 行是正常结果；它证明链路跑通，不证明全量排名。
+
 ## 常见命令配方
 
 本地 fixture：
@@ -161,5 +164,7 @@ tests/                            单元和 CLI 测试
 - 关键行数、日期范围、目标股票结果
 - 哪些测试通过
 - 哪些限制仍然存在
+
+如果总结 `daily-report`，区分 ingest 阶段的 `data-quality/data_quality_report.md` 和 `daily-report` 阶段生成的 `data_quality_gate.csv` / `data_quality_gate.json`。前者是采集质量报告，后者是日报输入一致性和阻断检查。
 
 不要只说“已完成”。研究系统的价值在于可复盘，回答要给出可追溯证据。
