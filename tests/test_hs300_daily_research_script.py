@@ -42,6 +42,15 @@ def test_hs300_daily_research_script_dry_run_uses_fixed_names_and_full_chain() -
     assert "STOCK_CODE=002594.SZ" in stdout
     assert "--scoring-config configs/scoring_hs300_daily_exploratory.yaml" in stdout
 
+    for factor in [
+        "volatility_20d",
+        "max_drawdown_60d",
+        "amount_cv_20d",
+        "industry_pe_ttm_percentile",
+        "operating_cashflow_to_profit",
+    ]:
+        assert f"--factor {factor}" in stdout
+
     for command in [
         "ashare ingest",
         "ashare as-of",
@@ -82,12 +91,20 @@ def test_readme_documents_daily_hs300_research_workflow() -> None:
 def test_hs300_daily_scoring_config_is_exploratory_and_loadable() -> None:
     config = yaml.safe_load(SCORING_CONFIG.read_text(encoding="utf-8"))
 
-    assert config["version"] == "hs300_daily_exploratory.v1"
+    assert config["version"] == "hs300_daily_exploratory.v2"
     assert config["validation_gate"]["mode"] == "non_strict"
     assert config["validation_gate"]["min_coverage"] == 0.2
     assert config["validation_gate"]["min_valid_oriented_ic_dates"] == 1
     assert config["validation_gate"]["min_mean_oriented_rank_ic"] == -999.0
     assert config["validation_gate"]["min_oriented_icir"] == -999.0
+    assert config["groups"]["financial"]["factors"]["operating_cashflow_to_profit"]["enabled"] is True
+    assert config["groups"]["valuation"]["factors"]["industry_pe_ttm_percentile"]["enabled"] is True
+    assert config["risk_penalty"]["enabled"] is True
+    assert set(config["risk_penalty"]["factors"]) == {
+        "volatility_20d",
+        "max_drawdown_60d",
+        "amount_cv_20d",
+    }
 
 
 def test_hs300_daily_research_script_prints_completion_summary(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ from ashare.pit.asof import (
     query_universe_members_as_of,
     query_valuation_daily_as_of,
 )
+from ashare.storage.db import init_db
 
 
 @pytest.fixture()
@@ -142,6 +143,92 @@ def test_risk_events_use_effective_date_not_event_date_only(
     assert before.empty
     assert len(after) == 1
     assert after.iloc[0]["event_id"] == "risk-000002-reduce"
+
+
+def test_source_filtered_pit_queries_do_not_mix_sources(tmp_path: Path) -> None:
+    db_path = tmp_path / "source_filters.duckdb"
+    init_db(db_path)
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(
+            """
+            INSERT INTO st_status (
+                stock_code, st_type, in_date, out_date, in_publish_time, in_effective_date,
+                out_publish_time, out_effective_date, source
+            )
+            VALUES
+                ('A', 'ST', DATE '2026-01-01', NULL, TIMESTAMP '2026-01-01 18:00:00',
+                 DATE '2026-01-02', NULL, NULL, 'fixture'),
+                ('A', 'ST', DATE '2026-01-01', NULL, TIMESTAMP '2026-01-01 18:00:00',
+                 DATE '2026-01-02', NULL, NULL, 'other-source'),
+                ('A', 'ST', DATE '2026-01-03', NULL, TIMESTAMP '2026-01-03 18:00:00',
+                 DATE '2026-01-04', NULL, NULL, 'fixture')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO fundamental_reports (
+                stock_code, report_period, publish_time, effective_date,
+                revenue, net_profit, roe, gross_margin, operating_cashflow,
+                debt_ratio, goodwill, total_equity, accounts_receivable, inventory, source
+            )
+            VALUES
+                ('A', DATE '2025-12-31', TIMESTAMP '2026-01-01 18:00:00',
+                 DATE '2026-01-02', 100, 10, 0.1, 0.2, 9, 0.3, 0, 50, 5, 5, 'fixture'),
+                ('A', DATE '2025-12-31', TIMESTAMP '2026-01-01 18:00:00',
+                 DATE '2026-01-02', 200, 20, 0.1, 0.2, 18, 0.3, 0, 50, 5, 5, 'other-source'),
+                ('A', DATE '2026-03-31', TIMESTAMP '2026-01-03 18:00:00',
+                 DATE '2026-01-04', 300, 30, 0.1, 0.2, 27, 0.3, 0, 50, 5, 5, 'fixture')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO announcements (
+                announcement_id, source, source_tag, stock_code, title, announcement_type,
+                publish_time, effective_date, url, raw_path, text_hash
+            )
+            VALUES
+                ('ann-fixture', 'csv', 'fixture', 'A', 'Fixture title', 'buyback',
+                 TIMESTAMP '2026-01-01 18:00:00', DATE '2026-01-02', '', '', 'h1'),
+                ('ann-other', 'csv', 'other-source', 'A', 'Other title', 'buyback',
+                 TIMESTAMP '2026-01-01 18:00:00', DATE '2026-01-02', '', '', 'h2'),
+                ('ann-future', 'csv', 'fixture', 'A', 'Future title', 'buyback',
+                 TIMESTAMP '2026-01-03 18:00:00', DATE '2026-01-04', '', '', 'h3')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO risk_events (
+                event_id, stock_code, event_type, event_date, publish_time, effective_date,
+                payload_json, source
+            )
+            VALUES
+                ('risk-fixture', 'A', 'pledge', DATE '2026-01-01',
+                 TIMESTAMP '2026-01-01 18:00:00', DATE '2026-01-02', '{}'::JSON, 'fixture'),
+                ('risk-other', 'A', 'pledge', DATE '2026-01-01',
+                 TIMESTAMP '2026-01-01 18:00:00', DATE '2026-01-02', '{}'::JSON, 'other-source'),
+                ('risk-future', 'A', 'pledge', DATE '2026-01-03',
+                 TIMESTAMP '2026-01-03 18:00:00', DATE '2026-01-04', '{}'::JSON, 'fixture')
+            """
+        )
+
+        st_rows = query_st_status_as_of(connection, "2026-01-02", stock_code="A", source="fixture")
+        reports = query_fundamental_reports_as_of(
+            connection, "2026-01-02", stock_code="A", source="fixture"
+        )
+        announcements = query_announcements_as_of(
+            connection, "2026-01-02", stock_code="A", source_tag="fixture"
+        )
+        risks = query_risk_events_as_of(
+            connection, "2026-01-02", stock_code="A", source="fixture"
+        )
+    finally:
+        connection.close()
+
+    assert st_rows["source"].tolist() == ["fixture"]
+    assert reports["source"].tolist() == ["fixture"]
+    assert announcements["announcement_id"].tolist() == ["ann-fixture"]
+    assert risks["event_id"].tolist() == ["risk-fixture"]
 
 
 def test_universe_members_respect_exit_visibility_and_half_open_dates(

@@ -395,8 +395,15 @@ run_cmd \
   --factor return_20d \
   --factor return_60d \
   --factor above_ma60 \
+  --factor volatility_20d \
+  --factor max_drawdown_60d \
+  --factor amount_cv_20d \
   --factor pe_ttm_percentile \
   --factor pb_percentile \
+  --factor industry_pe_ttm_percentile \
+  --factor revenue_yoy \
+  --factor profit_yoy \
+  --factor operating_cashflow_to_profit \
   --factor is_st \
   --factor is_suspended \
   --factor is_delisted \
@@ -414,8 +421,15 @@ run_cmd \
   --factor return_20d \
   --factor return_60d \
   --factor above_ma60 \
+  --factor volatility_20d \
+  --factor max_drawdown_60d \
+  --factor amount_cv_20d \
   --factor pe_ttm_percentile \
   --factor pb_percentile \
+  --factor industry_pe_ttm_percentile \
+  --factor revenue_yoy \
+  --factor profit_yoy \
+  --factor operating_cashflow_to_profit \
   --horizon 5,20 \
   --n-groups 5 \
   --output-dir "$VALIDATION_DIR" \
@@ -434,8 +448,15 @@ run_cmd \
   --factor return_20d \
   --factor return_60d \
   --factor above_ma60 \
+  --factor volatility_20d \
+  --factor max_drawdown_60d \
+  --factor amount_cv_20d \
   --factor pe_ttm_percentile \
   --factor pb_percentile \
+  --factor industry_pe_ttm_percentile \
+  --factor revenue_yoy \
+  --factor profit_yoy \
+  --factor operating_cashflow_to_profit \
   --top "$TOP_N" \
   --output-dir "$SCAN_DIR" \
   --run-id "$SCAN_RUN" \

@@ -2284,8 +2284,14 @@ def daily_report(
         context.add_duckdb_table_input(
             "universe_members", predicate=f"index_code={resolved_index_code}"
         )
-        context.add_duckdb_table_input("announcements", predicate=f"effective_date<={as_of}")
-        context.add_duckdb_table_input("risk_events", predicate=f"effective_date<={as_of}")
+        context.add_duckdb_table_input(
+            "announcements",
+            predicate=f"effective_date<={as_of}; source_or_tag={resolved_data_source}",
+        )
+        context.add_duckdb_table_input(
+            "risk_events",
+            predicate=f"effective_date<={as_of}; source={resolved_data_source}",
+        )
         context.add_duckdb_table_input(
             "research_artifacts", predicate="Phase 7 input artifact lookup"
         )
@@ -2552,6 +2558,7 @@ def stock_report(
                     source_run_id=bundle.run_id,
                 )
         score_metadata = read_artifact_json(score_bundle, "score_metadata.json")
+        score_data_source = score_metadata.get("data_source")
         stock_code_predicate = ",".join(stock_codes)
         context.add_duckdb_table_input(
             "factor_values",
@@ -2570,10 +2577,18 @@ def stock_report(
             "universe_members", predicate=f"stock_code IN ({stock_code_predicate}); as_of={as_of}"
         )
         context.add_duckdb_table_input(
-            "announcements", predicate=f"stock_code IN ({stock_code_predicate}); effective_date<={as_of}"
+            "announcements",
+            predicate=(
+                f"stock_code IN ({stock_code_predicate}); effective_date<={as_of}; "
+                f"source_or_tag={score_data_source}"
+            ),
         )
         context.add_duckdb_table_input(
-            "risk_events", predicate=f"stock_code IN ({stock_code_predicate}); effective_date<={as_of}"
+            "risk_events",
+            predicate=(
+                f"stock_code IN ({stock_code_predicate}); effective_date<={as_of}; "
+                f"source={score_data_source}"
+            ),
         )
         base_metadata = {
             **_audit_metadata(

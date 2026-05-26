@@ -87,8 +87,12 @@ def calculate_factors_for_date(
         parsed_date,
         source=data_source,
     )
-    st_status = query_st_status_as_of(connection, parsed_date)
-    fundamental_reports = query_fundamental_reports_as_of(connection, parsed_date)
+    st_status = query_st_status_as_of(connection, parsed_date, source=data_source)
+    fundamental_reports = query_fundamental_reports_as_of(
+        connection,
+        parsed_date,
+        source=data_source,
+    )
 
     frames = [
         calculate_momentum_factors(

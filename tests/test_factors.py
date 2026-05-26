@@ -303,6 +303,49 @@ def test_industry_pe_percentile_filters_industry_classification_by_data_source(
     assert _value(factors, "000002.SZ", "industry_pe_ttm_percentile") == 1.0
 
 
+def test_hard_filter_and_financial_factors_filter_by_data_source(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO st_status (
+            stock_code, st_type, in_date, out_date, in_publish_time, in_effective_date,
+            out_publish_time, out_effective_date, source
+        )
+        VALUES (
+            '000001.SZ', 'ST', DATE '2026-06-01', NULL,
+            TIMESTAMP '2026-06-01 18:00:00', DATE '2026-06-02',
+            NULL, NULL, 'other-source'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO fundamental_reports (
+            stock_code, report_period, publish_time, effective_date,
+            revenue, net_profit, roe, gross_margin, operating_cashflow,
+            debt_ratio, goodwill, total_equity, accounts_receivable, inventory, source
+        )
+        VALUES (
+            '000001.SZ', DATE '2026-03-31', TIMESTAMP '2026-04-29 18:00:00',
+            DATE '2026-04-30', 999.0, 1.0, 0.1, 0.2, 999.0,
+            0.3, 0.0, 100.0, 10.0, 10.0, 'other-source'
+        )
+        """
+    )
+
+    factors = calculate_factors_for_date(
+        connection,
+        "2026-06-26",
+        index_code=INDEX_CODE,
+        factor_names=["is_st", "operating_cashflow_to_profit"],
+        data_source="fixture",
+    )
+
+    assert _value(factors, "000001.SZ", "is_st") == 0.0
+    assert math.isclose(_value(factors, "000001.SZ", "operating_cashflow_to_profit"), 0.9)
+
+
 def test_is_st_respects_interval_effective_dates(connection: duckdb.DuckDBPyConnection) -> None:
     expectations = {
         "2026-01-20": 0.0,

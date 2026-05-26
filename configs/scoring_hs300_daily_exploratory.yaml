@@ -4,7 +4,7 @@
 # short rolling validation window to have positive oriented IC before producing
 # a composite research score. The validation artifacts remain part of the score
 # report and must be reviewed; this config is not for formal PIT research.
-version: hs300_daily_exploratory.v1
+version: hs300_daily_exploratory.v2
 
 score:
   top_n: 20
@@ -55,10 +55,13 @@ groups:
     factors:
       revenue_yoy:
         enabled: true
-        weight: 0.50
+        weight: 0.35
       profit_yoy:
         enabled: true
-        weight: 0.50
+        weight: 0.35
+      operating_cashflow_to_profit:
+        enabled: true
+        weight: 0.30
 
   valuation:
     enabled: true
@@ -67,10 +70,13 @@ groups:
     factors:
       pe_ttm_percentile:
         enabled: true
-        weight: 0.50
+        weight: 0.35
       pb_percentile:
         enabled: true
-        weight: 0.50
+        weight: 0.35
+      industry_pe_ttm_percentile:
+        enabled: true
+        weight: 0.30
 
   momentum:
     enabled: true
@@ -93,7 +99,19 @@ groups:
 risk_penalty:
   enabled: true
   max_penalty: 15.0
-  factors: {}
+  factors:
+    volatility_20d:
+      enabled: true
+      weight: 0.40
+      risk_direction: higher_is_worse
+    max_drawdown_60d:
+      enabled: true
+      weight: 0.40
+      risk_direction: higher_is_worse
+    amount_cv_20d:
+      enabled: true
+      weight: 0.20
+      risk_direction: higher_is_worse
 
 diagnostics:
   sensitivity:

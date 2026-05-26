@@ -230,6 +230,78 @@ def test_stock_report_cli_writes_single_stock_report_and_audit_index(tmp_path: P
     assert manifest["status"] == "succeeded"
 
 
+def test_stock_report_cli_filters_recent_events_by_score_data_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "stock_source.duckdb"
+    output_dir = tmp_path / "stock-source-output"
+    _build_db(db_path)
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(
+            """
+            INSERT INTO announcements (
+                announcement_id, source, source_tag, stock_code, title, announcement_type,
+                publish_time, effective_date, url, raw_path, text_hash
+            )
+            VALUES ('ann-other', 'csv', 'other-source', 'A', 'Other buyback', 'buyback',
+                    '2026-01-01 18:00:00', '2026-01-02', '', '', 'hash-other')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO risk_events (
+                event_id, stock_code, event_type, event_date, publish_time, effective_date,
+                payload_json, source
+            )
+            VALUES ('risk-other', 'A', 'pledge', '2026-01-02', '2026-01-02 18:00:00',
+                    '2026-01-02', '{}'::JSON, 'other-source')
+            """
+        )
+    finally:
+        connection.close()
+    score_paths = _write_text_files(
+        tmp_path / "score-source",
+        {
+            "scoring_report.md": "# Scoring\n",
+            "scored_candidates.csv": (
+                "rank,stock_code,total_score,hard_filter_passed,selection_reason,risk_tips\n"
+                "1,A,88,true,score reason,none\n"
+            ),
+            "score_breakdown.csv": (
+                "stock_code,score_group,weighted_contribution,group_score,missing_factor_count\n"
+                "A,momentum,45,90,0\n"
+            ),
+            "factor_normalized_scores.csv": (
+                "stock_code,factor_name,score_group,raw_factor_value,normalized_score,"
+                "weighted_contribution,validation_status\n"
+                "A,return_20d,momentum,0.2,90,45,PASS\n"
+            ),
+            "hard_filter_exclusions.csv": "as_of_date,source_run_id,index_code,stock_code,hard_filter_name,factor_value,exclusion_reason\n",
+            "score_metadata.json": '{"index_code":"LOCAL","data_source":"fixture"}\n',
+        },
+    )
+    _insert_artifact_run(db_path, "score-source-run", "scoring", score_paths)
+
+    _run_ashare(
+        [
+            "stock-report",
+            "--db-path", str(db_path),
+            "--code", "A",
+            "--as-of", "2026-01-02",
+            "--source-run-id", "factor-run",
+            "--score-run-id", "score-source-run",
+            "--output-dir", str(output_dir),
+            "--run-id", "stock-source-run",
+        ]
+    )
+
+    announcements = (output_dir / "stock_recent_announcements.csv").read_text(encoding="utf-8")
+    risk_flags = (output_dir / "stock_risk_flags.csv").read_text(encoding="utf-8")
+    assert "ann-1" in announcements
+    assert "ann-other" not in announcements
+    assert "risk-1" in risk_flags
+    assert "risk-other" not in risk_flags
+
+
 def test_stock_report_cli_generates_batch_reports_from_watchlist_csv(tmp_path: Path) -> None:
     db_path = tmp_path / "stock_watchlist.duckdb"
     output_dir = tmp_path / "stock-watchlist-output"

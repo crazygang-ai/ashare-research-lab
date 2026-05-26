@@ -96,6 +96,11 @@ def build_stock_report(
     if not stock_code:
         raise ValueError("--code must be non-empty.")
     score_metadata = read_artifact_json(score_bundle, "score_metadata.json")
+    data_source = _first_non_empty(
+        metadata.get("data_source"),
+        score_metadata.get("data_source"),
+    )
+    source_reference = str(data_source) if data_source is not None else None
     index_code = _first_non_empty(metadata.get("index_code"), score_metadata.get("index_code"))
 
     factor_values = _stock_factor_values(
@@ -110,6 +115,7 @@ def build_stock_report(
         stock_code=stock_code,
         parsed_as_of=parsed_as_of,
         recent_days=recent_days,
+        source_tag=None if source_reference == "legacy" else source_reference,
     )
     risk_flags = _stock_risk_flags(
         stock_code=stock_code,
@@ -119,6 +125,7 @@ def build_stock_report(
         announcements=announcements,
         connection=connection,
         recent_days=recent_days,
+        data_source=source_reference,
     )
     stock_metadata = _stock_metadata(
         connection,
@@ -377,24 +384,35 @@ def _stock_recent_announcements(
     stock_code: str,
     parsed_as_of: Any,
     recent_days: int,
+    source_tag: str | None,
 ) -> pd.DataFrame:
     if not _table_exists(connection, "announcements"):
         return pd.DataFrame(columns=STOCK_ANNOUNCEMENT_COLUMNS)
     start = parsed_as_of - timedelta(days=recent_days)
-    frame = connection.execute(
-        """
+    sql = """
         SELECT announcement_id, source, source_tag, stock_code, title, announcement_type,
                publish_time, effective_date, url
         FROM announcements
         WHERE stock_code = ?
+          AND CAST(publish_time AS DATE) <= ?
           AND effective_date BETWEEN ? AND ?
-        ORDER BY effective_date DESC, publish_time DESC, announcement_id
-        """,
-        [stock_code, start, parsed_as_of],
+    """
+    params: list[object] = [stock_code, parsed_as_of, start, parsed_as_of]
+    if source_tag is not None:
+        sql += " AND COALESCE(source_tag, source) = ?"
+        params.append(source_tag)
+    sql += " ORDER BY effective_date DESC, publish_time DESC, announcement_id"
+    frame = connection.execute(
+        sql,
+        params,
     ).df()
     if frame.empty:
         return pd.DataFrame(columns=STOCK_ANNOUNCEMENT_COLUMNS)
-    summary = _llm_summary_lookup(connection, frame["announcement_id"].astype(str).tolist())
+    summary = _llm_summary_lookup(
+        connection,
+        frame["announcement_id"].astype(str).tolist(),
+        source_tag=source_tag,
+    )
     evidence = _llm_evidence_lookup(connection, frame["announcement_id"].astype(str).tolist())
     result = frame.copy()
     result["summary"] = result["announcement_id"].astype(str).map(summary).fillna("")
@@ -414,6 +432,7 @@ def _stock_risk_flags(
     announcements: pd.DataFrame,
     connection: duckdb.DuckDBPyConnection,
     recent_days: int,
+    data_source: str | None,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     factor_lookup = {
@@ -466,6 +485,7 @@ def _stock_risk_flags(
             stock_code=stock_code,
             parsed_as_of=parsed_as_of,
             recent_days=recent_days,
+            source=None if data_source == "legacy" else data_source,
         )
     )
     frame = pd.DataFrame(rows, columns=STOCK_RISK_COLUMNS)
@@ -672,19 +692,26 @@ def _risk_event_rows(
     stock_code: str,
     parsed_as_of: Any,
     recent_days: int,
+    source: str | None,
 ) -> list[dict[str, object]]:
     if not _table_exists(connection, "risk_events"):
         return []
     start = parsed_as_of - timedelta(days=recent_days)
-    frame = connection.execute(
-        """
+    sql = """
         SELECT event_id, event_type, event_date, effective_date
         FROM risk_events
         WHERE stock_code = ?
+          AND CAST(publish_time AS DATE) <= ?
           AND effective_date BETWEEN ? AND ?
-        ORDER BY effective_date DESC, event_id
-        """,
-        [stock_code, start, parsed_as_of],
+    """
+    params: list[object] = [stock_code, parsed_as_of, start, parsed_as_of]
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
+    sql += " ORDER BY effective_date DESC, event_id"
+    frame = connection.execute(
+        sql,
+        params,
     ).df()
     return [
         _risk_row(
@@ -700,19 +727,28 @@ def _risk_event_rows(
     ]
 
 
-def _llm_summary_lookup(connection: duckdb.DuckDBPyConnection, announcement_ids: Sequence[str]) -> dict[str, str]:
+def _llm_summary_lookup(
+    connection: duckdb.DuckDBPyConnection,
+    announcement_ids: Sequence[str],
+    source_tag: str | None = None,
+) -> dict[str, str]:
     if not announcement_ids or not _table_exists(connection, "announcement_llm_results"):
         return {}
     placeholders = ", ".join("?" for _ in announcement_ids)
-    frame = connection.execute(
-        f"""
+    sql = f"""
         SELECT announcement_id, summary
         FROM announcement_llm_results
         WHERE announcement_id IN ({placeholders})
           AND status = 'success'
-        ORDER BY created_at DESC
-        """,
-        list(announcement_ids),
+    """
+    params: list[object] = list(announcement_ids)
+    if source_tag is not None:
+        sql += " AND COALESCE(source_tag, source) = ?"
+        params.append(source_tag)
+    sql += " ORDER BY created_at DESC"
+    frame = connection.execute(
+        sql,
+        params,
     ).df()
     result: dict[str, str] = {}
     for row in frame.itertuples(index=False):

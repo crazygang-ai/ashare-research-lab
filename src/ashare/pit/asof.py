@@ -264,6 +264,7 @@ def query_st_status_as_of(
     connection: duckdb.DuckDBPyConnection,
     as_of_date: DateLike,
     stock_code: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return active ST status rows using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -314,6 +315,9 @@ def query_st_status_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code, in_date, st_type"
 
     return connection.execute(sql, params).df()
@@ -397,6 +401,7 @@ def query_fundamental_reports_as_of(
     connection: duckdb.DuckDBPyConnection,
     as_of_date: DateLike,
     stock_code: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return visible reports using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -425,6 +430,9 @@ def query_fundamental_reports_as_of(
     if stock_code is not None:
         sql += " AND stock_code = ?"
         params.append(stock_code)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code, report_period, publish_time"
 
     return connection.execute(sql, params).df()
@@ -435,6 +443,8 @@ def query_announcements_as_of(
     as_of_date: DateLike,
     stock_code: str | None = None,
     announcement_type: str | None = None,
+    source: str | None = None,
+    source_tag: str | None = None,
 ) -> pd.DataFrame:
     """Return visible announcements using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -462,6 +472,12 @@ def query_announcements_as_of(
     if announcement_type is not None:
         sql += " AND announcement_type = ?"
         params.append(announcement_type)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
+    if source_tag is not None:
+        sql += " AND COALESCE(source_tag, source) = ?"
+        params.append(source_tag)
     sql += " ORDER BY stock_code, publish_time, announcement_id"
 
     return connection.execute(sql, params).df()
@@ -472,6 +488,7 @@ def query_risk_events_as_of(
     as_of_date: DateLike,
     stock_code: str | None = None,
     event_type: str | None = None,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """Return visible risk events using a caller-owned read-only connection."""
     parsed_date = parse_as_of_date(as_of_date)
@@ -496,6 +513,9 @@ def query_risk_events_as_of(
     if event_type is not None:
         sql += " AND event_type = ?"
         params.append(event_type)
+    if source is not None:
+        sql += " AND source = ?"
+        params.append(source)
     sql += " ORDER BY stock_code, publish_time, event_id"
 
     return connection.execute(sql, params).df()
@@ -541,7 +561,12 @@ def build_as_of_snapshot(
             stock_code=stock_code,
             source=data_source,
         ),
-        st_status=query_st_status_as_of(connection, parsed_date, stock_code=stock_code),
+        st_status=query_st_status_as_of(
+            connection,
+            parsed_date,
+            stock_code=stock_code,
+            source=data_source,
+        ),
         industry_classifications=query_industry_classifications_as_of(
             connection,
             parsed_date,
@@ -554,9 +579,20 @@ def build_as_of_snapshot(
             connection,
             parsed_date,
             stock_code=stock_code,
+            source=data_source,
         ),
-        announcements=query_announcements_as_of(connection, parsed_date, stock_code=stock_code),
-        risk_events=query_risk_events_as_of(connection, parsed_date, stock_code=stock_code),
+        announcements=query_announcements_as_of(
+            connection,
+            parsed_date,
+            stock_code=stock_code,
+            source_tag=None if data_source == "legacy" else data_source,
+        ),
+        risk_events=query_risk_events_as_of(
+            connection,
+            parsed_date,
+            stock_code=stock_code,
+            source=data_source,
+        ),
     )
 
 

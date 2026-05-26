@@ -133,7 +133,15 @@ SCORE_RUN=hs300-score-${ASOF_NODASH}
 DAILY_REPORT_RUN=hs300-daily-report-${ASOF_NODASH}
 ```
 
-每日脚本默认使用 `configs/scoring_hs300_daily_exploratory.yaml`。这个配置保留 coverage、IC 样本数和 group return 检查，但不会要求短窗口验证的 oriented IC 必须为正；`validation_gate.csv` 和单因子验证报告仍然是复盘输入，不代表因子有效性证明。
+每日脚本默认计算并传递给验证 / scan / score 的研究因子包括：
+
+- 动量和趋势：`return_20d`、`return_60d`、`above_ma60`
+- 风险和成交额稳定性：`volatility_20d`、`max_drawdown_60d`、`amount_cv_20d`
+- 估值和行业内估值：`pe_ttm_percentile`、`pb_percentile`、`industry_pe_ttm_percentile`
+- 财务质量：`revenue_yoy`、`profit_yoy`、`operating_cashflow_to_profit`
+- hard filter：`is_st`、`is_suspended`、`is_delisted`、`low_liquidity`
+
+每日脚本默认使用 `configs/scoring_hs300_daily_exploratory.yaml`。这个配置保留 coverage、IC 样本数和 group return 检查，但不会要求短窗口验证的 oriented IC 必须为正；风险类新增因子通过 `risk_penalty` 参与综合评分扣分，财务质量和行业内估值因子在通过 validation gate 后才进入对应 score group。`validation_gate.csv` 和单因子验证报告仍然是复盘输入，不代表因子有效性证明；这个 exploratory scoring config 不是 formal PIT research。
 
 默认输出目录按日期分层：
 

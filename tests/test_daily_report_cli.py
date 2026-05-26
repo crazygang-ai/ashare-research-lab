@@ -346,6 +346,59 @@ def test_daily_report_cli_writes_report_gate_manifest_and_artifact_index(tmp_pat
     assert manifest["status"] == "succeeded"
 
 
+def test_daily_report_cli_filters_recent_events_by_data_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "daily_source.duckdb"
+    output_dir = tmp_path / "daily-source-output"
+    _build_db(db_path)
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(
+            """
+            INSERT INTO announcements (
+                announcement_id, source, source_tag, stock_code, title, announcement_type,
+                publish_time, effective_date, url, raw_path, text_hash
+            )
+            VALUES ('ann-other', 'csv', 'other-source', 'A', 'Other buyback', 'buyback',
+                    '2026-01-01 18:00:00', '2026-01-02', '', '', 'hash-other')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO risk_events (
+                event_id, stock_code, event_type, event_date, publish_time, effective_date,
+                payload_json, source
+            )
+            VALUES ('risk-other', 'B', 'pledge', '2026-01-02', '2026-01-02 18:00:00',
+                    '2026-01-02', '{}'::JSON, 'other-source')
+            """
+        )
+    finally:
+        connection.close()
+    _insert_input_artifacts(db_path, tmp_path / "inputs")
+
+    _run_ashare(
+        [
+            "daily-report",
+            "--db-path", str(db_path),
+            "--as-of", "2026-01-02",
+            "--source-run-id", "factor-run",
+            "--scan-run-id", "scan-run",
+            "--score-run-id", "score-run",
+            "--backtest-run-id", "backtest-run",
+            "--event-study-run-id", "event-run",
+            "--data-source", "fixture",
+            "--output-dir", str(output_dir),
+            "--run-id", "daily-source-run",
+        ]
+    )
+
+    risk_summary = (output_dir / "daily_risk_summary.csv").read_text(encoding="utf-8")
+    assert "ann-1" in risk_summary
+    assert "risk-1" in risk_summary
+    assert "ann-other" not in risk_summary
+    assert "risk-other" not in risk_summary
+
+
 def test_daily_report_formal_blocks_on_data_quality_failure(tmp_path: Path) -> None:
     db_path = tmp_path / "daily_fail.duckdb"
     output_dir = tmp_path / "daily-fail-output"
