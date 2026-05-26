@@ -515,6 +515,8 @@ def _assumptions(
         "benchmark_primary": "synthetic_cap_weight",
         "benchmark_secondary": "synthetic_equal_weight",
         "block_sell_if_limit_down": trading_rules.get("block_sell_if_limit_down", True),
+        "board_lot_size": trading_rules.get("board_lot_size", 100),
+        "allow_odd_lot_sell": trading_rules.get("allow_odd_lot_sell", True),
         "commission_bps": costs.get("commission_bps", 2.5),
         "delist_exit_value_ratio": trading_rules.get("delist_exit_value_ratio", 0.0),
         "end_date": end.isoformat(),

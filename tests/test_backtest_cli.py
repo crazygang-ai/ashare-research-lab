@@ -146,6 +146,8 @@ def test_backtest_cli_runs_writes_reports_and_does_not_write_duckdb(tmp_path: Pa
 
     assert "backtest report is for research only" in result.stdout
     assert "回测报告仅供研究复盘" in result.stdout
+    assert "historical simulation" in result.stdout
+    assert "not a performance promise" in result.stdout
     assert set(path.name for path in output_dir.iterdir()) == {
         *set(BACKTEST_REPORT_FILES.values()),
         "run_manifest.json",
@@ -159,6 +161,10 @@ def test_backtest_cli_runs_writes_reports_and_does_not_write_duckdb(tmp_path: Pa
     assert "last_visible_close" in set(holdings["price_source"])
     assert "T+1" in report_text
     assert "开盘" in report_text
+    assert "historical simulation" in report_text
+    assert "not a performance promise" in report_text
+    assert "board_lot_size" in report_text
+    assert "odd-lot sell" in report_text
     assert "不包含风格归因" in report_text
     after = _table_counts(db_path, ["factor_values", "research_runs"])
     assert after["factor_values"] == before["factor_values"]

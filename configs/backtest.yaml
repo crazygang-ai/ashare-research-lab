@@ -18,11 +18,18 @@ benchmark:
   market_cap_field_priority:
     - float_mv
     - total_mv
+  real_index:
+    enabled: false
+    table: index_daily_prices
+    source: null
+    index_code: null
 
 trading_rules:
   skip_buy_if_limit_up: true
   block_sell_if_limit_down: true
   hold_if_suspended: true
+  board_lot_size: 100
+  allow_odd_lot_sell: true
   delist_exit_value_ratio: 0.0
   price_compare_tolerance: 0.000001
 

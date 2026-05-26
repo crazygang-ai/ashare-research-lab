@@ -22,6 +22,8 @@ RULES = {
     "skip_buy_if_limit_up": True,
     "block_sell_if_limit_down": True,
     "hold_if_suspended": True,
+    "board_lot_size": 100,
+    "allow_odd_lot_sell": True,
     "price_compare_tolerance": 0.000001,
 }
 
@@ -94,7 +96,7 @@ def test_costs_apply_commission_minimum_stamp_tax_and_side_rules() -> None:
 def test_execute_rebalance_uses_t1_open_sells_first_and_records_costs() -> None:
     connection = _connection()
     try:
-        positions = pd.DataFrame([{"stock_code": "A", "shares": 100.0, "last_close": 10.0}])
+        positions = pd.DataFrame([{"stock_code": "A", "shares": 300.0, "last_close": 10.0}])
         targets = pd.DataFrame([{"stock_code": "B", "target_weight": 0.5}])
 
         new_positions, ledger, cash_after = execute_rebalance(
@@ -103,8 +105,8 @@ def test_execute_rebalance_uses_t1_open_sells_first_and_records_costs() -> None:
             execution_date=EXECUTION_DATE,
             current_positions=positions,
             target_weights=targets,
-            cash=1000.0,
-            nav_before_trade=2000.0,
+            cash=7000.0,
+            nav_before_trade=12000.0,
             cost_config=COSTS,
             trading_rules=RULES,
         )
@@ -118,7 +120,7 @@ def test_execute_rebalance_uses_t1_open_sells_first_and_records_costs() -> None:
         assert buy["stock_code"] == "B"
         assert buy["executed_price"] == pytest.approx(20.2)
         assert buy["slippage_cost"] > 0
-        assert cash_after < 1000.0
+        assert cash_after < 7000.0
         assert set(new_positions["stock_code"]) == {"B"}
     finally:
         connection.close()
@@ -181,6 +183,149 @@ def test_execute_rebalance_forces_visible_delist_exit_and_rejects_delisted_buy()
         assert forced["executed_notional"] == 0.0
         assert rejected["reject_reason"] == "delisted"
         assert new_positions.empty
+        assert cash_after == pytest.approx(500.0)
+    finally:
+        connection.close()
+
+
+def test_execute_rebalance_rounds_buys_to_board_lots_and_allows_odd_lot_exit() -> None:
+    connection = _connection()
+    try:
+        positions = pd.DataFrame([{"stock_code": "A", "shares": 50.0, "last_close": 10.0}])
+        targets = pd.DataFrame([{"stock_code": "B", "target_weight": 1.0}])
+
+        new_positions, ledger, _cash_after = execute_rebalance(
+            connection,
+            signal_date="2026-01-01",
+            execution_date=EXECUTION_DATE,
+            current_positions=positions,
+            target_weights=targets,
+            cash=6_000.0,
+            nav_before_trade=5_000.0,
+            cost_config=COSTS,
+            trading_rules=RULES,
+        )
+
+        sell = ledger[ledger["stock_code"].eq("A")].iloc[0]
+        buy = ledger[ledger["stock_code"].eq("B")].iloc[0]
+        assert sell["order_status"] == "executed"
+        assert sell["shares_delta"] == pytest.approx(-50.0)
+        assert buy["order_status"] == "executed"
+        assert buy["shares_delta"] == pytest.approx(200.0)
+        assert buy["executed_notional"] == pytest.approx(4_040.0)
+        assert set(new_positions["stock_code"]) == {"B"}
+        assert new_positions.loc[new_positions["stock_code"].eq("B"), "shares"].iloc[0] == 200.0
+    finally:
+        connection.close()
+
+
+def test_execute_rebalance_sells_existing_odd_lot_residual_as_one_block() -> None:
+    connection = _connection()
+    try:
+        positions = pd.DataFrame([{"stock_code": "A", "shares": 150.0, "last_close": 10.0}])
+        targets = pd.DataFrame([{"stock_code": "A", "target_weight": 0.5}])
+
+        new_positions, ledger, _cash_after = execute_rebalance(
+            connection,
+            signal_date="2026-01-01",
+            execution_date=EXECUTION_DATE,
+            current_positions=positions,
+            target_weights=targets,
+            cash=500.0,
+            nav_before_trade=2_000.0,
+            cost_config=COSTS,
+            trading_rules=RULES,
+        )
+
+        sell = ledger.iloc[0]
+        assert sell["stock_code"] == "A"
+        assert sell["order_status"] == "executed"
+        assert sell["shares_delta"] == pytest.approx(-50.0)
+        assert new_positions.loc[new_positions["stock_code"].eq("A"), "shares"].iloc[0] == 100.0
+    finally:
+        connection.close()
+
+
+def test_execute_rebalance_rejects_buy_below_board_lot() -> None:
+    connection = _connection()
+    try:
+        positions = pd.DataFrame(columns=["stock_code", "shares", "last_close"])
+        targets = pd.DataFrame([{"stock_code": "B", "target_weight": 0.1}])
+
+        new_positions, ledger, cash_after = execute_rebalance(
+            connection,
+            signal_date="2026-01-01",
+            execution_date=EXECUTION_DATE,
+            current_positions=positions,
+            target_weights=targets,
+            cash=1_000.0,
+            nav_before_trade=1_000.0,
+            cost_config=COSTS,
+            trading_rules=RULES,
+        )
+
+        buy = ledger.iloc[0]
+        assert buy["stock_code"] == "B"
+        assert buy["order_status"] == "rejected"
+        assert buy["reject_reason"] == "below_board_lot"
+        assert new_positions.empty
+        assert cash_after == pytest.approx(1_000.0)
+    finally:
+        connection.close()
+
+
+def test_execute_rebalance_rejects_buy_when_cash_cannot_afford_one_board_lot_after_costs() -> None:
+    connection = _connection()
+    try:
+        positions = pd.DataFrame(columns=["stock_code", "shares", "last_close"])
+        targets = pd.DataFrame([{"stock_code": "B", "target_weight": 1.0}])
+
+        new_positions, ledger, cash_after = execute_rebalance(
+            connection,
+            signal_date="2026-01-01",
+            execution_date=EXECUTION_DATE,
+            current_positions=positions,
+            target_weights=targets,
+            cash=2_000.0,
+            nav_before_trade=5_000.0,
+            cost_config=COSTS,
+            trading_rules=RULES,
+        )
+
+        buy = ledger.iloc[0]
+        assert buy["stock_code"] == "B"
+        assert buy["order_status"] == "rejected"
+        assert buy["reject_reason"] == "insufficient_cash"
+        assert new_positions.empty
+        assert cash_after == pytest.approx(2_000.0)
+    finally:
+        connection.close()
+
+
+def test_execute_rebalance_rejects_partial_odd_lot_sell_when_odd_lot_sells_disabled() -> None:
+    connection = _connection()
+    try:
+        positions = pd.DataFrame([{"stock_code": "A", "shares": 150.0, "last_close": 10.0}])
+        targets = pd.DataFrame([{"stock_code": "A", "target_weight": 0.5}])
+        rules = {**RULES, "allow_odd_lot_sell": False}
+
+        new_positions, ledger, cash_after = execute_rebalance(
+            connection,
+            signal_date="2026-01-01",
+            execution_date=EXECUTION_DATE,
+            current_positions=positions,
+            target_weights=targets,
+            cash=500.0,
+            nav_before_trade=2_000.0,
+            cost_config=COSTS,
+            trading_rules=rules,
+        )
+
+        sell = ledger.iloc[0]
+        assert sell["stock_code"] == "A"
+        assert sell["order_status"] == "rejected"
+        assert sell["reject_reason"] == "below_board_lot"
+        assert new_positions.loc[new_positions["stock_code"].eq("A"), "shares"].iloc[0] == 150.0
         assert cash_after == pytest.approx(500.0)
     finally:
         connection.close()

@@ -1831,6 +1831,8 @@ def backtest(
 
     typer.echo("backtest report is for research only and is not a trading instruction.")
     typer.echo("回测报告仅供研究复盘，不是交易指令。")
+    typer.echo("backtest is a historical simulation and is not a performance promise.")
+    typer.echo("回测是历史模拟，不是收益或表现承诺。")
     typer.echo(f"Database path: {db_path}")
     typer.echo(f"Backtest interval: {from_} to {to}")
     typer.echo(f"source_run_id: {source_run_id}")

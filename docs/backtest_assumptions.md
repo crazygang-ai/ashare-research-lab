@@ -50,8 +50,17 @@ describes the assumptions in human-readable form.
 - Execution price is the T+1 open price from `daily_prices.open`.
 - Sell orders are processed before buy orders.
 - The notional base is the previous close NAV before the execution date.
-- Fractional shares are allowed. This phase does not model A-share 100-share lot
-  constraints or odd-lot details.
+- Buy orders are rounded down to the configured A-share board-lot size
+  (`trading_rules.board_lot_size`, default 100 shares). Unfilled target notional
+  remains cash. If the requested quantity can form at least one board lot but
+  available cash cannot cover one board lot plus costs, the order is rejected
+  with `reject_reason = insufficient_cash`.
+- Sell orders are rounded down to board-lot multiples, but when
+  `trading_rules.allow_odd_lot_sell = true` an existing residual odd-lot block
+  may be sold once without splitting it. Full exits may sell the entire residual
+  position. If no board lot or complete odd-lot residual can be sold, the order
+  is rejected with `reject_reason = below_board_lot` and the residual holding
+  remains.
 
 ## Trading Costs
 
@@ -80,10 +89,15 @@ The matching layer uses execution-date trading data:
 - Missing `daily_prices` rows or invalid open prices block trading.
 - Limit-up opens block buys.
 - Limit-down opens block sells.
+- Buy quantities must be board-lot multiples. Sell quantities are board-lot
+  multiples plus, when present and requested, one complete odd-lot residual
+  block; odd-lot residuals are not split.
 - Delisting state comes from PIT `securities`, not from `factor_values`.
 
 Rejected buy orders leave the target notional in cash. Rejected sell orders
-continue to be held.
+continue to be held. Reports include `trade_ledger.csv` with `reject_reason`
+values and a Markdown diagnostic summary for rejected orders and forced delist
+exits.
 
 ## Delisting
 
@@ -128,15 +142,43 @@ formal benchmark constituents.
 Suspended benchmark members or members missing a daily price row receive 0.0
 return for that day and reduce reported coverage.
 
+## Real Index 行情 Gap
+
+Real index行情 is still not used in benchmark calculations. The intended future
+interface is a source-isolated `index_daily_prices` table or provider output
+separate from stock `daily_prices`, with at least:
+
+- `index_code`
+- `trade_date`
+- `open`
+- `high`
+- `low`
+- `close`
+- `volume`
+- `amount`
+- `source`
+- `source_tag`
+
+Backtest benchmark code should only read real index行情 when an explicit config
+such as `benchmark.real_index.enabled = true`, `benchmark.real_index.index_code`,
+and `benchmark.real_index.source` is provided. It must not mix index行情 rows into
+stock行情 tables. Until that implementation exists, enabling
+`benchmark.real_index.enabled` fails fast instead of silently falling back to a
+synthetic benchmark.
+
 ## Not Covered
 
 - This report is for research replay only and is not a trading instruction.
+- This report is a historical simulation and is not a performance promise.
 - No new factors are computed.
 - No multi-factor weighting, composite score, industry neutralization, style
   attribution, or industry attribution is implemented.
 - No real index行情 is used.
-- No board-lot constraint, partial fill, order-book depth, volume constraint,
-  impact-cost model, shorting, leverage, parameter search, or walk-forward
-  optimization is implemented.
+- No corporate-action cash flow is modeled: cash dividends, bonus shares, rights
+  issues, and related tax/accounting flows are not posted to portfolio cash or
+  holdings.
+- No partial fill, order-book depth, volume constraint, impact-cost model,
+  shorting, leverage, parameter search, or walk-forward optimization is
+  implemented.
 - Backtest runs write audit metadata and artifact indexes, but detailed
   backtest result tables are still not persisted in DuckDB.

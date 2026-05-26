@@ -194,14 +194,14 @@
 
 ### D28. 回测暂不处理 A 股 100 股整数手和零股卖出细节
 
-- 现状: Phase 1b 使用金额簿记并允许小数股，未实现买入 100 股整数手、零股卖出、最小价格单位和下单数量舍入。
+- 现状: 已在 Phase 8 后补齐基础 A 股数量规则：买入按 `trading_rules.board_lot_size` 向下舍入到 100 股整数手；卖出按整数手向下舍入，并可按 `allow_odd_lot_sell` 一次性卖出未拆分的零股余额。无法形成一手或完整零股块的订单会在 `trade_ledger.csv` 中记录 `reject_reason = below_board_lot`。
 - 触发: 当回测资金规模较小、目标权重较细或需要模拟真实交易订单数量时，整数手约束会影响可成交数量、现金余额和跟踪误差。
-- 决策: 本 phase 不实现整数手；后续在引入更真实撮合模型时统一补齐数量舍入和零股规则。
+- 决策: 当前只实现基础数量舍入和零股清仓，不实现最小价格单位、盘口队列、撤单、部分成交或交易所更细规则。
 - 关联: Plan 第 12 节回测假设；Phase 1b broker。
 
 ### D29. 当前 schema 缺少真实指数行情表，基准为合成基准
 
-- 现状: `src/ashare/storage/schema.sql` 没有指数日行情表；Phase 1b 只能基于同一 PIT universe 构造市值加权和等权合成基准。
+- 现状: `src/ashare/storage/schema.sql` 没有指数日行情表；Phase 1b 只能基于同一 PIT universe 构造市值加权和等权合成基准。`benchmark.real_index.enabled = true` 会 fail-fast，避免静默伪装成真实指数基准。
 - 触发: 当报告需要对比真实沪深 300、中证 500 或其他指数官方收益时，合成基准不能替代真实指数。
 - 决策: 本 phase 不接入真实指数行情；后续新增指数行情 ingest 和 schema 后，再在 backtest benchmark 中加入真实指数基准。
 - 关联: Plan 第 6 节核心表；Plan 第 12 节回测假设。

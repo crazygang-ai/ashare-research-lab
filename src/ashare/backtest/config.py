@@ -26,11 +26,19 @@ DEFAULT_BACKTEST_CONFIG: dict[str, object] = {
         "secondary": "synthetic_equal_weight",
         "rebalance_frequency": "monthly",
         "market_cap_field_priority": ["float_mv", "total_mv"],
+        "real_index": {
+            "enabled": False,
+            "table": "index_daily_prices",
+            "source": None,
+            "index_code": None,
+        },
     },
     "trading_rules": {
         "skip_buy_if_limit_up": True,
         "block_sell_if_limit_down": True,
         "hold_if_suspended": True,
+        "board_lot_size": 100,
+        "allow_odd_lot_sell": True,
         "delist_exit_value_ratio": 0.0,
         "price_compare_tolerance": 0.000001,
     },
@@ -118,3 +126,28 @@ def _validate_config(config: Mapping[str, object]) -> None:
         value = float(costs.get(key, 0.0))
         if value < 0:
             raise ValueError(f"costs.{key} must be non-negative.")
+
+    benchmark = config.get("benchmark")
+    if not isinstance(benchmark, Mapping):
+        raise ValueError("backtest config benchmark section must be a mapping.")
+    allowed_benchmarks = {"synthetic_cap_weight", "synthetic_equal_weight"}
+    for key in ["primary", "secondary"]:
+        value = str(benchmark.get(key, ""))
+        if value not in allowed_benchmarks:
+            allowed = ", ".join(sorted(allowed_benchmarks))
+            raise ValueError(f"benchmark.{key} must be one of: {allowed}.")
+    real_index = benchmark.get("real_index")
+    if real_index is not None and not isinstance(real_index, Mapping):
+        raise ValueError("benchmark.real_index section must be a mapping.")
+    if isinstance(real_index, Mapping) and bool(real_index.get("enabled", False)):
+        raise ValueError(
+            "benchmark.real_index.enabled is not supported yet; "
+            "only synthetic benchmarks are available."
+        )
+
+    trading_rules = config.get("trading_rules")
+    if not isinstance(trading_rules, Mapping):
+        raise ValueError("backtest config trading_rules section must be a mapping.")
+    board_lot_size = int(trading_rules.get("board_lot_size", 100))
+    if board_lot_size <= 0:
+        raise ValueError("trading_rules.board_lot_size must be positive.")

@@ -71,6 +71,7 @@ def render_backtest_markdown(
         "",
         "## Strategy Rules",
         "",
+        "- This backtest is a historical simulation for research replay, not a performance promise.",
         "- Strategy: monthly Top N equal-weight portfolio.",
         "- Signal source: stored `factor_values` rows for the explicit `source_run_id`.",
         "- Signal date: each month-end open trading day in the requested interval.",
@@ -92,8 +93,14 @@ def render_backtest_markdown(
         "- The matching layer uses `daily_prices.is_suspended`, `daily_prices.limit_up`, `daily_prices.limit_down`, and PIT `securities` delisting state.",
         "- Suspended stocks cannot be bought or sold.",
         "- Limit-up stocks cannot be bought; limit-down stocks cannot be sold.",
+        f"- A-share board-lot rule: buy orders are rounded down to `board_lot_size` = {_stringify(assumptions.get('board_lot_size'))} shares.",
+        f"- A-share odd-lot sell rule: `allow_odd_lot_sell` = {_stringify(assumptions.get('allow_odd_lot_sell'))}; sells may include one complete odd-lot residual block without splitting it.",
         "- Blocked buy notional remains cash; blocked sells continue to be held.",
         "- Delisted holdings are forced out with `order_status = forced_delist_exit` and default value 0.0.",
+        "",
+        "## Trading Constraint Diagnostics",
+        "",
+        _markdown_table(_constraint_summary(result.trade_ledger)),
         "",
         "## Benchmarks",
         "",
@@ -133,9 +140,11 @@ def render_backtest_markdown(
             "",
             "- 本报告不是交易建议。",
             "- backtest report is for research only and is not a trading instruction.",
+            "- This historical simulation is not a performance promise.",
+            "- 本报告是历史模拟，不是收益或表现承诺。",
             "- 本报告不包含风格归因和行业归因。",
             "- 本 phase 不做复杂风格归因。",
-            "- This phase does not model cash dividends, bonus shares, rights issues, board-lot constraints, partial fills, order-book depth, volume constraints, leverage, shorting, or parameter optimization.",
+            "- This phase does not model cash dividends, bonus shares, rights issues, partial fills, order-book depth, volume constraints, impact costs, leverage, shorting, or parameter optimization.",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -218,6 +227,45 @@ def _metrics_summary(metrics: Mapping[str, object]) -> pd.DataFrame:
     return pd.DataFrame(
         [{"metric": key, "value": _format_number(metrics.get(key))} for key in keys]
     )
+
+
+def _constraint_summary(trade_ledger: pd.DataFrame) -> pd.DataFrame:
+    if trade_ledger.empty:
+        return pd.DataFrame(
+            [
+                {"status": "rejected", "reason": "(none)", "order_count": 0},
+                {"status": "forced_delist_exit", "reason": "(none)", "order_count": 0},
+            ]
+        )
+    rejected = trade_ledger[trade_ledger["order_status"].eq("rejected")].copy()
+    rows: list[dict[str, object]] = []
+    if rejected.empty:
+        rows.append({"status": "rejected", "reason": "(none)", "order_count": 0})
+    else:
+        rejected["reject_reason"] = rejected["reject_reason"].fillna("(missing)")
+        counts = (
+            rejected.groupby("reject_reason", dropna=False)
+            .size()
+            .reset_index(name="order_count")
+            .sort_values(["reject_reason"], kind="mergesort")
+        )
+        rows.extend(
+            {
+                "status": "rejected",
+                "reason": str(row.reject_reason),
+                "order_count": int(row.order_count),
+            }
+            for row in counts.itertuples(index=False)
+        )
+    forced_count = int(trade_ledger["order_status"].eq("forced_delist_exit").sum())
+    rows.append(
+        {
+            "status": "forced_delist_exit",
+            "reason": "PIT delisting state",
+            "order_count": forced_count,
+        }
+    )
+    return pd.DataFrame(rows)
 
 
 def _assumption_map(assumptions: pd.DataFrame) -> dict[str, object]:

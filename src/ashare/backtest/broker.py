@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import date
+from math import floor
 
 import duckdb
 import pandas as pd
@@ -179,8 +180,6 @@ def _execute_order(
         tolerance=tolerance,
         trading_rules=trading_rules,
     )
-    if side == "buy" and intended_notional > cash + 1e-6:
-        reject_reason = reject_reason or "insufficient_cash"
 
     price_row = prices.get(stock_code)
     raw_open = _price_value(price_row, "open")
@@ -206,7 +205,33 @@ def _execute_order(
 
     if side == "buy":
         executed_price = raw_open * (1.0 + slippage_bps / 10_000.0)
-        shares_delta = intended_notional / executed_price
+        requested_shares = intended_notional / executed_price
+        shares_delta, rounded_reject_reason = _rounded_buy_shares(
+            requested_shares=requested_shares,
+            executed_price=executed_price,
+            cash=cash,
+            cost_config=cost_config,
+            trading_rules=trading_rules,
+        )
+        if shares_delta <= 1e-12:
+            return _ledger_row(
+                execution_date=execution_date,
+                signal_date=signal_date,
+                stock_code=stock_code,
+                side=side,
+                order_status="rejected",
+                reject_reason=rounded_reject_reason,
+                intended_notional=intended_notional,
+                executed_notional=0.0,
+                executed_price=0.0,
+                shares_delta=0.0,
+                commission=0.0,
+                stamp_tax=0.0,
+                slippage_cost=0.0,
+                total_cost=0.0,
+                cash_after=cash,
+                positions=positions,
+            )
         executed_notional = shares_delta * executed_price
         base_notional = shares_delta * raw_open
         slippage_cost = max(executed_notional - base_notional, 0.0)
@@ -222,6 +247,30 @@ def _execute_order(
     else:
         held_shares = _held_shares(positions, stock_code)
         requested_shares = min(held_shares, intended_notional / raw_open)
+        requested_shares = _rounded_sell_shares(
+            requested_shares=requested_shares,
+            held_shares=held_shares,
+            trading_rules=trading_rules,
+        )
+        if requested_shares <= 1e-12:
+            return _ledger_row(
+                execution_date=execution_date,
+                signal_date=signal_date,
+                stock_code=stock_code,
+                side=side,
+                order_status="rejected",
+                reject_reason="below_board_lot",
+                intended_notional=intended_notional,
+                executed_notional=0.0,
+                executed_price=0.0,
+                shares_delta=0.0,
+                commission=0.0,
+                stamp_tax=0.0,
+                slippage_cost=0.0,
+                total_cost=0.0,
+                cash_after=cash,
+                positions=positions,
+            )
         executed_price = raw_open * (1.0 - slippage_bps / 10_000.0)
         shares_delta = -requested_shares
         executed_notional = requested_shares * executed_price
@@ -449,6 +498,63 @@ def _add_shares(positions: pd.DataFrame, stock_code: str, shares_delta: float) -
             ignore_index=True,
         )
     return _normalize_positions(result)
+
+
+def _rounded_buy_shares(
+    *,
+    requested_shares: float,
+    executed_price: float,
+    cash: float,
+    cost_config: Mapping[str, object],
+    trading_rules: Mapping[str, object],
+) -> tuple[float, str | None]:
+    lot_size = _lot_size(trading_rules)
+    shares = _round_down_to_lot(requested_shares, lot_size)
+    if shares <= 1e-12:
+        return 0.0, "below_board_lot" if requested_shares > 0 else "insufficient_cash"
+    while shares > 1e-12:
+        executed_notional = shares * executed_price
+        costs = calculate_trade_costs(
+            side="buy",
+            notional=executed_notional,
+            commission_bps=_float(cost_config, "commission_bps", 2.5),
+            stamp_tax_bps=_float(cost_config, "stamp_tax_bps", 10.0),
+            min_commission_yuan=_float(cost_config, "min_commission_yuan", 5.0),
+        )
+        if executed_notional + costs["total_cost"] <= cash + 1e-6:
+            return float(shares), None
+        shares -= lot_size
+    return 0.0, "insufficient_cash"
+
+
+def _rounded_sell_shares(
+    *,
+    requested_shares: float,
+    held_shares: float,
+    trading_rules: Mapping[str, object],
+) -> float:
+    if requested_shares >= held_shares - 1e-9:
+        return max(held_shares, 0.0)
+
+    lot_size = _lot_size(trading_rules)
+    rounded = _round_down_to_lot(requested_shares, lot_size)
+    if bool(trading_rules.get("allow_odd_lot_sell", True)):
+        residual = held_shares - _round_down_to_lot(held_shares, lot_size)
+        if residual > 1e-9 and rounded + residual <= requested_shares + 1e-9:
+            rounded += residual
+        elif rounded <= 1e-12 and residual <= requested_shares + 1e-9:
+            rounded = residual
+    return min(rounded, held_shares)
+
+
+def _round_down_to_lot(shares: float, lot_size: int) -> float:
+    if shares <= 0:
+        return 0.0
+    return float(floor(shares / lot_size) * lot_size)
+
+
+def _lot_size(trading_rules: Mapping[str, object]) -> int:
+    return max(int(trading_rules.get("board_lot_size", 100)), 1)
 
 
 def _price_value(row: Mapping[str, object] | None, key: str) -> float | None:
