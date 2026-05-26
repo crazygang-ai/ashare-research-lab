@@ -31,6 +31,10 @@ def _bundle(kind: str, run_id: str, directory: Path, files: dict[str, str]) -> A
     )
 
 
+def _markdown_section(markdown: str, heading: str, next_heading: str) -> str:
+    return markdown.split(f"## {heading}\n\n", 1)[1].split(f"\n## {next_heading}", 1)[0]
+
+
 def test_stock_report_renders_single_stock_review(tmp_path: Path) -> None:
     db_path = tmp_path / "stock.duckdb"
     init_db(db_path)
@@ -127,6 +131,13 @@ def test_stock_report_renders_single_stock_review(tmp_path: Path) -> None:
     assert result.metadata["in_target_universe"] is True
     assert not result.stock_factor_values.empty
     assert not result.stock_score_breakdown.empty
+    valuation_section = _markdown_section(
+        result.markdown,
+        "Valuation Factors",
+        "Momentum Factors",
+    )
+    assert "pe_ttm_percentile" in valuation_section
+    assert "is_suspended" not in valuation_section
 
     paths = write_stock_report(result, tmp_path / "stock-output")
     for path in paths.values():

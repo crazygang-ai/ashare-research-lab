@@ -66,6 +66,35 @@ STOCK_ANNOUNCEMENT_COLUMNS = [
     "url",
 ]
 
+FINANCIAL_FACTOR_NAMES = frozenset(
+    {
+        "revenue_yoy",
+        "profit_yoy",
+        "operating_cashflow_to_profit",
+    }
+)
+VALUATION_FACTOR_NAMES = frozenset(
+    {
+        "pe_ttm_percentile",
+        "pb_percentile",
+        "industry_pe_ttm_percentile",
+    }
+)
+MOMENTUM_FACTOR_NAMES = frozenset(
+    {
+        "return_20d",
+        "return_60d",
+        "above_ma60",
+    }
+)
+RISK_FACTOR_NAMES = frozenset(
+    {
+        "volatility_20d",
+        "max_drawdown_60d",
+        "amount_cv_20d",
+    }
+)
+
 
 @dataclass(frozen=True)
 class StockReportResult:
@@ -227,15 +256,19 @@ def render_stock_markdown(
         "",
         "## Financial Factors",
         "",
-        markdown_table(_factor_group(factor_values, ["revenue", "profit", "roe", "gross", "cash", "debt", "goodwill"])),
+        markdown_table(_factor_group(factor_values, FINANCIAL_FACTOR_NAMES)),
         "",
         "## Valuation Factors",
         "",
-        markdown_table(_factor_group(factor_values, ["pe", "pb", "ps", "dividend", "mv", "percentile"])),
+        markdown_table(_factor_group(factor_values, VALUATION_FACTOR_NAMES)),
         "",
         "## Momentum Factors",
         "",
-        markdown_table(_factor_group(factor_values, ["return", "ma", "momentum"])),
+        markdown_table(_factor_group(factor_values, MOMENTUM_FACTOR_NAMES)),
+        "",
+        "## Risk Factors",
+        "",
+        markdown_table(_factor_group(factor_values, RISK_FACTOR_NAMES)),
         "",
         "## Score Breakdown",
         "",
@@ -834,15 +867,13 @@ def _llm_evidence_lookup(
     return result
 
 
-def _factor_group(factor_values: pd.DataFrame, markers: Sequence[str]) -> pd.DataFrame:
+def _factor_group(factor_values: pd.DataFrame, factor_names: Sequence[str]) -> pd.DataFrame:
     columns = ["factor_name", "factor_value"]
     if factor_values.empty or "factor_name" not in factor_values.columns:
         return pd.DataFrame(columns=columns)
-    lower_markers = tuple(marker.lower() for marker in markers)
+    allowed = {name.lower() for name in factor_names}
     selected = factor_values[
-        factor_values["factor_name"].astype(str).str.lower().map(
-            lambda value: any(marker in value for marker in lower_markers)
-        )
+        factor_values["factor_name"].astype(str).str.lower().isin(allowed)
     ]
     return ordered_frame(selected, columns, ["factor_name"])
 
