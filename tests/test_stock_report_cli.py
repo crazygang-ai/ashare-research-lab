@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -140,6 +141,59 @@ def _insert_artifact_run(db_path: Path, run_id: str, kind: str, paths: dict[str,
         connection.close()
 
 
+def _insert_llm_result_with_evidence(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    parse_id: str,
+    parse_run_id: str,
+    announcement_id: str,
+    source: str,
+    source_tag: str,
+    summary: str,
+    confidence: float,
+    result_created_at: str,
+    evidence_id: str,
+    evidence_text: str,
+    evidence_created_at: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO announcement_llm_results (
+            parse_id, parse_run_id, announcement_id, source, source_tag, stock_code,
+            announcement_type, schema_version, sentiment, summary, parsed_json,
+            raw_response_json, prompt_hash, confidence, confidence_reasons, status, error,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'A', 'buyback', 'test-schema', 'neutral', ?,
+                CAST(? AS JSON), CAST(? AS JSON), 'prompt-hash', ?, CAST(? AS JSON),
+                'success', NULL, ?)
+        """,
+        [
+            parse_id,
+            parse_run_id,
+            announcement_id,
+            source,
+            source_tag,
+            summary,
+            "{}",
+            "{}",
+            confidence,
+            "{}",
+            result_created_at,
+        ],
+    )
+    connection.execute(
+        """
+        INSERT INTO announcement_llm_evidence (
+            evidence_id, parse_id, announcement_id, item_type, item_index, evidence_text,
+            page, char_start, char_end, locator_status, created_at
+        )
+        VALUES (?, ?, ?, 'summary', 0, ?, NULL, 0, 10, 'located', ?)
+        """,
+        [evidence_id, parse_id, announcement_id, evidence_text, evidence_created_at],
+    )
+
+
 def test_stock_report_cli_writes_single_stock_report_and_audit_index(tmp_path: Path) -> None:
     db_path = tmp_path / "stock.duckdb"
     output_dir = tmp_path / "stock-output"
@@ -248,6 +302,16 @@ def test_stock_report_cli_filters_recent_events_by_score_data_source(tmp_path: P
         )
         connection.execute(
             """
+            INSERT INTO announcements (
+                announcement_id, source, source_tag, stock_code, title, announcement_type,
+                publish_time, effective_date, url, raw_path, text_hash
+            )
+            VALUES ('ann-1', 'csv', 'other-source', 'A', 'Other source duplicate buyback',
+                    'buyback', '2026-01-01 18:00:00', '2026-01-02', '', '', 'hash-dup')
+            """
+        )
+        connection.execute(
+            """
             INSERT INTO risk_events (
                 event_id, stock_code, event_type, event_date, publish_time, effective_date,
                 payload_json, source
@@ -255,6 +319,34 @@ def test_stock_report_cli_filters_recent_events_by_score_data_source(tmp_path: P
             VALUES ('risk-other', 'A', 'pledge', '2026-01-02', '2026-01-02 18:00:00',
                     '2026-01-02', '{}'::JSON, 'other-source')
             """
+        )
+        _insert_llm_result_with_evidence(
+            connection,
+            parse_id="parse-fixture-ann-1",
+            parse_run_id="parse-fixture",
+            announcement_id="ann-1",
+            source="fixture",
+            source_tag="fixture",
+            summary="fixture summary isolated",
+            confidence=0.91,
+            result_created_at="2026-01-02 08:00:00",
+            evidence_id="evidence-fixture-ann-1",
+            evidence_text="fixture evidence isolated",
+            evidence_created_at="2026-01-02 08:00:00",
+        )
+        _insert_llm_result_with_evidence(
+            connection,
+            parse_id="parse-other-ann-1",
+            parse_run_id="parse-other",
+            announcement_id="ann-1",
+            source="csv",
+            source_tag="other-source",
+            summary="other summary should not leak",
+            confidence=0.12,
+            result_created_at="2026-01-03 08:00:00",
+            evidence_id="evidence-other-ann-1",
+            evidence_text="other evidence should not leak",
+            evidence_created_at="2026-01-01 08:00:00",
         )
     finally:
         connection.close()
@@ -294,10 +386,23 @@ def test_stock_report_cli_filters_recent_events_by_score_data_source(tmp_path: P
         ]
     )
 
+    with (output_dir / "stock_recent_announcements.csv").open(
+        encoding="utf-8",
+        newline="",
+    ) as file:
+        announcement_rows = list(csv.DictReader(file))
     announcements = (output_dir / "stock_recent_announcements.csv").read_text(encoding="utf-8")
     risk_flags = (output_dir / "stock_risk_flags.csv").read_text(encoding="utf-8")
+    assert len(announcement_rows) == 1
+    assert announcement_rows[0]["announcement_id"] == "ann-1"
+    assert announcement_rows[0]["summary"] == "fixture summary isolated"
+    assert announcement_rows[0]["evidence_text"] == "fixture evidence isolated"
+    assert announcement_rows[0]["confidence"] == "0.91"
     assert "ann-1" in announcements
     assert "ann-other" not in announcements
+    assert "other summary should not leak" not in announcements
+    assert "other evidence should not leak" not in announcements
+    assert "0.12" not in announcements
     assert "risk-1" in risk_flags
     assert "risk-other" not in risk_flags
 

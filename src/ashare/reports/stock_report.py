@@ -413,13 +413,20 @@ def _stock_recent_announcements(
         frame["announcement_id"].astype(str).tolist(),
         source_tag=source_tag,
     )
-    evidence = _llm_evidence_lookup(connection, frame["announcement_id"].astype(str).tolist())
+    evidence = _llm_evidence_lookup(
+        connection,
+        frame["announcement_id"].astype(str).tolist(),
+        source_tag=source_tag,
+    )
+    confidence = _llm_confidence_lookup(
+        connection,
+        frame["announcement_id"].astype(str).tolist(),
+        source_tag=source_tag,
+    )
     result = frame.copy()
     result["summary"] = result["announcement_id"].astype(str).map(summary).fillna("")
     result["evidence_text"] = result["announcement_id"].astype(str).map(evidence).fillna("")
-    result["confidence"] = result["announcement_id"].astype(str).map(
-        _llm_confidence_lookup(connection, frame["announcement_id"].astype(str).tolist())
-    )
+    result["confidence"] = result["announcement_id"].astype(str).map(confidence)
     return ordered_frame(result, STOCK_ANNOUNCEMENT_COLUMNS, ["effective_date", "announcement_id"])
 
 
@@ -756,39 +763,69 @@ def _llm_summary_lookup(
     return result
 
 
-def _llm_confidence_lookup(connection: duckdb.DuckDBPyConnection, announcement_ids: Sequence[str]) -> dict[str, float]:
+def _llm_confidence_lookup(
+    connection: duckdb.DuckDBPyConnection,
+    announcement_ids: Sequence[str],
+    source_tag: str | None = None,
+) -> dict[str, float]:
     if not announcement_ids or not _table_exists(connection, "announcement_llm_results"):
         return {}
     placeholders = ", ".join("?" for _ in announcement_ids)
-    frame = connection.execute(
-        f"""
+    sql = f"""
         SELECT announcement_id, confidence
         FROM announcement_llm_results
         WHERE announcement_id IN ({placeholders})
           AND status = 'success'
-        ORDER BY created_at DESC
-        """,
-        list(announcement_ids),
-    ).df()
+    """
+    params: list[object] = list(announcement_ids)
+    if source_tag is not None:
+        sql += " AND COALESCE(source_tag, source) = ?"
+        params.append(source_tag)
+    sql += " ORDER BY created_at DESC, parse_id"
+    frame = connection.execute(sql, params).df()
     result: dict[str, float] = {}
     for row in frame.itertuples(index=False):
         result.setdefault(str(row.announcement_id), row.confidence)
     return result
 
 
-def _llm_evidence_lookup(connection: duckdb.DuckDBPyConnection, announcement_ids: Sequence[str]) -> dict[str, str]:
+def _llm_evidence_lookup(
+    connection: duckdb.DuckDBPyConnection,
+    announcement_ids: Sequence[str],
+    source_tag: str | None = None,
+) -> dict[str, str]:
     if not announcement_ids or not _table_exists(connection, "announcement_llm_evidence"):
         return {}
     placeholders = ", ".join("?" for _ in announcement_ids)
-    frame = connection.execute(
-        f"""
-        SELECT announcement_id, evidence_text
+    params: list[object] = list(announcement_ids)
+    if source_tag is None:
+        frame = connection.execute(
+            f"""
+            SELECT announcement_id, evidence_text
+            FROM announcement_llm_evidence
+            WHERE announcement_id IN ({placeholders})
+            ORDER BY created_at, item_index, evidence_id
+            """,
+            params,
+        ).df()
+    elif not _table_exists(connection, "announcement_llm_results"):
+        return {}
+    else:
+        frame = connection.execute(
+            f"""
+        SELECT evidence.announcement_id, evidence.evidence_text
         FROM announcement_llm_evidence
-        WHERE announcement_id IN ({placeholders})
-        ORDER BY created_at, item_index
+        AS evidence
+        JOIN announcement_llm_results
+        AS result
+          ON evidence.parse_id = result.parse_id
+        WHERE evidence.announcement_id IN ({placeholders})
+          AND result.status = 'success'
+          AND COALESCE(result.source_tag, result.source) = ?
+        ORDER BY evidence.created_at, evidence.item_index, evidence.evidence_id
         """,
-        list(announcement_ids),
-    ).df()
+            [*params, source_tag],
+        ).df()
     result: dict[str, str] = {}
     for row in frame.itertuples(index=False):
         text = stringify(row.evidence_text)
