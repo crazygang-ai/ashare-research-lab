@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
 
 from ashare.service.config import load_service_config
 from ashare.service.ui_runs import (
     Hs300DailyRunRequest,
     StockReportRunRequest,
+    UIRunRecord,
     UIRunStatus,
     build_hs300_daily_command,
     build_stock_report_command,
     create_ui_run,
     list_ui_runs,
+    read_ui_run,
+    write_ui_run,
 )
 
 
@@ -87,6 +94,154 @@ def test_build_hs300_daily_command_includes_optional_flags(tmp_path: Path) -> No
     assert "--max-symbols" in command
     assert "20" in command
     assert "--watchlist-file" in command
+
+
+def test_list_ui_runs_sorts_by_created_at_desc_across_task_types(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    write_ui_run(
+        config,
+        UIRunRecord(
+            ui_run_id="stock-report-old",
+            task_type="stock-report",
+            status=UIRunStatus.QUEUED,
+            params={},
+            command_preview=[],
+            created_at="2026-05-22T00:00:00+00:00",
+        ),
+    )
+    write_ui_run(
+        config,
+        UIRunRecord(
+            ui_run_id="hs300-daily-new",
+            task_type="hs300-daily",
+            status=UIRunStatus.QUEUED,
+            params={},
+            command_preview=[],
+            created_at="2026-05-23T00:00:00+00:00",
+        ),
+    )
+
+    runs = list_ui_runs(config, limit=1)
+
+    assert [run.ui_run_id for run in runs] == ["hs300-daily-new"]
+
+
+def test_list_ui_runs_skips_bad_json_files(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    valid = UIRunRecord(
+        ui_run_id="hs300-daily-valid",
+        task_type="hs300-daily",
+        status=UIRunStatus.QUEUED,
+        params={},
+        command_preview=[],
+        created_at="2026-05-23T00:00:00+00:00",
+    )
+    write_ui_run(config, valid)
+    config.ui_runner_history_dir.mkdir(parents=True, exist_ok=True)
+    (config.ui_runner_history_dir / "bad-json.json").write_text("{", encoding="utf-8")
+    (config.ui_runner_history_dir / "bad-schema.json").write_text(
+        json.dumps({"ui_run_id": "missing-fields"}),
+        encoding="utf-8",
+    )
+
+    runs = list_ui_runs(config)
+
+    assert [run.ui_run_id for run in runs] == ["hs300-daily-valid"]
+
+
+def test_read_ui_run_rejects_path_traversal(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ui_runner_history_dir.mkdir(parents=True, exist_ok=True)
+    outside = UIRunRecord(
+        ui_run_id="outside",
+        task_type="hs300-daily",
+        status=UIRunStatus.QUEUED,
+        params={},
+        command_preview=[],
+        created_at="2026-05-23T00:00:00+00:00",
+    )
+    outside_path = tmp_path / "outside.json"
+    outside_path.write_text(
+        json.dumps(outside.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert read_ui_run(config, "../outside") is None
+
+
+def test_request_models_reject_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        StockReportRunRequest(
+            stock_code="002594.SZ",
+            as_of="2026-05-22",
+            source_run_id="factor",
+            score_run_id="score",
+            output_dir="data/reports/generated/ui/stock-002594-SZ",
+            run_id="stock-ui",
+            confirmed=True,
+            unexpected="field",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cache_mode", "invalid"),
+        ("confirmed", False),
+        ("stock_code", "BADCODE"),
+        ("as_of", "2026-02-31"),
+    ],
+)
+def test_hs300_daily_request_rejects_invalid_inputs(field: str, value: object) -> None:
+    params = {
+        "as_of": "2026-05-22",
+        "stock_code": "002594.SZ",
+        "cache_mode": "use",
+        "confirmed": True,
+    }
+    params[field] = value
+
+    with pytest.raises(ValidationError):
+        Hs300DailyRunRequest(**params)
+
+
+def test_create_ui_run_generates_unique_ids_for_same_microsecond(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 5, 22, 1, 2, 3, 123456, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("ashare.service.ui_runs.datetime", FixedDateTime)
+
+    first = create_ui_run(
+        config,
+        task_type="hs300-daily",
+        params={
+            "as_of": "2026-05-22",
+            "stock_code": "002594.SZ",
+            "cache_mode": "use",
+            "confirmed": True,
+        },
+    )
+    second = create_ui_run(
+        config,
+        task_type="hs300-daily",
+        params={
+            "as_of": "2026-05-22",
+            "stock_code": "002594.SZ",
+            "cache_mode": "use",
+            "confirmed": True,
+        },
+    )
+
+    assert first.ui_run_id != second.ui_run_id
 
 
 def _config(tmp_path: Path):

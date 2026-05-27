@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import StrEnum
 import json
 from pathlib import Path
 import re
 from typing import Any
+import uuid
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ashare.service.config import ServiceConfig
 from ashare.service.schemas import jsonable
+
+
+_UI_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_STOCK_CODE_PATTERN = r"^\d{6}\.(SH|SZ)$"
 
 
 class UIRunStatus(StrEnum):
@@ -25,7 +30,9 @@ class UIRunStatus(StrEnum):
 
 
 class StockReportRunRequest(BaseModel):
-    stock_code: str = Field(min_length=6)
+    model_config = ConfigDict(extra="forbid")
+
+    stock_code: str = Field(pattern=_STOCK_CODE_PATTERN)
     as_of: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     source_run_id: str = Field(min_length=1)
     score_run_id: str = Field(min_length=1)
@@ -35,6 +42,20 @@ class StockReportRunRequest(BaseModel):
     run_id: str = Field(min_length=1)
     confirmed: bool = False
 
+    @field_validator("as_of")
+    @classmethod
+    def validate_as_of(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("db_path", "output_dir")
+    @classmethod
+    def strip_non_empty_path(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("path field must be non-empty.")
+        return stripped
+
     @model_validator(mode="after")
     def require_confirmation(self) -> "StockReportRunRequest":
         if not self.confirmed:
@@ -43,12 +64,30 @@ class StockReportRunRequest(BaseModel):
 
 
 class Hs300DailyRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     as_of: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    stock_code: str = Field(default="002594.SZ", min_length=6)
+    stock_code: str = Field(default="002594.SZ", pattern=_STOCK_CODE_PATTERN)
     cache_mode: str = "use"
     max_symbols: int | None = Field(default=None, gt=0)
     watchlist_file: str | None = None
     confirmed: bool = False
+
+    @field_validator("as_of")
+    @classmethod
+    def validate_as_of(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("watchlist_file")
+    @classmethod
+    def strip_optional_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("path field must be non-empty.")
+        return stripped
 
     @model_validator(mode="after")
     def validate_request(self) -> "Hs300DailyRunRequest":
@@ -199,20 +238,34 @@ def write_ui_run(config: ServiceConfig, run: UIRunRecord) -> Path:
 
 
 def read_ui_run(config: ServiceConfig, ui_run_id: str) -> UIRunRecord | None:
-    path = config.ui_runner_history_dir / f"{ui_run_id}.json"
+    if not _UI_RUN_ID_RE.fullmatch(ui_run_id):
+        return None
+    history_dir = config.ui_runner_history_dir.resolve()
+    path = (history_dir / f"{ui_run_id}.json").resolve()
+    if not path.is_relative_to(history_dir):
+        return None
     if not path.is_file():
         return None
-    return _record_from_dict(json.loads(path.read_text(encoding="utf-8")))
+    try:
+        record = _record_from_dict(json.loads(path.read_text(encoding="utf-8")))
+        _created_at_sort_key(record.created_at)
+        return record
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
 
 
 def list_ui_runs(config: ServiceConfig, limit: int = 50) -> list[UIRunRecord]:
     if not config.ui_runner_history_dir.is_dir():
         return []
-    records = [
-        _record_from_dict(json.loads(path.read_text(encoding="utf-8")))
-        for path in sorted(config.ui_runner_history_dir.glob("*.json"), reverse=True)
-    ]
-    return records[:limit]
+    records: list[tuple[datetime, UIRunRecord]] = []
+    for path in config.ui_runner_history_dir.glob("*.json"):
+        try:
+            record = _record_from_dict(json.loads(path.read_text(encoding="utf-8")))
+            records.append((_created_at_sort_key(record.created_at), record))
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            continue
+    records.sort(key=lambda item: item[0], reverse=True)
+    return [record for _, record in records[:limit]]
 
 
 def _record_from_dict(data: dict[str, Any]) -> UIRunRecord:
@@ -236,8 +289,16 @@ def _record_from_dict(data: dict[str, Any]) -> UIRunRecord:
 def _new_ui_run_id(task_type: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     safe_type = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_type).strip("-")
-    return f"{safe_type}-{timestamp}"
+    return f"{safe_type}-{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _created_at_sort_key(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
