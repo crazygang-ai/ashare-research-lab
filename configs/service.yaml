@@ -36,6 +36,16 @@ scheduler:
   enabled: false
   timezone: Asia/Shanghai
 
+ui_runner:
+  enabled: false
+  max_concurrent_runs: 1
+  history_dir: data/service/workflow-runs
+  log_dir: data/service/workflow-logs
+  require_confirmation: true
+  allowed_commands:
+    - stock-report
+    - hs300-daily
+
 workflows:
   phase4-fixture-research:
     enabled: false

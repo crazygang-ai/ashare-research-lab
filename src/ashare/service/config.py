@@ -42,8 +42,18 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "token_header": "X-Ashare-Token",
     },
     "scheduler": {"enabled": False, "timezone": "Asia/Shanghai"},
+    "ui_runner": {
+        "enabled": False,
+        "max_concurrent_runs": 1,
+        "history_dir": "data/service/workflow-runs",
+        "log_dir": "data/service/workflow-logs",
+        "require_confirmation": True,
+        "allowed_commands": ["stock-report", "hs300-daily"],
+    },
     "workflows": {},
 }
+
+_ALLOWED_UI_RUNNER_COMMANDS = {"stock-report", "hs300-daily"}
 
 _ALLOWED_TOKEN_CONFIG_KEYS = {
     "allow_http_workflow_run",
@@ -86,6 +96,10 @@ class ServiceConfig:
         return self.data["scheduler"]
 
     @property
+    def ui_runner(self) -> dict[str, Any]:
+        return self.data["ui_runner"]
+
+    @property
     def workflows(self) -> dict[str, Any]:
         return self.data["workflows"]
 
@@ -124,6 +138,30 @@ class ServiceConfig:
     @property
     def scheduler_timezone(self) -> str:
         return str(self.scheduler.get("timezone", "Asia/Shanghai"))
+
+    @property
+    def ui_runner_enabled(self) -> bool:
+        return bool(self.ui_runner.get("enabled", False))
+
+    @property
+    def ui_runner_max_concurrent_runs(self) -> int:
+        return int(self.ui_runner.get("max_concurrent_runs", 1))
+
+    @property
+    def ui_runner_history_dir(self) -> Path:
+        return self.resolve_path(self.ui_runner["history_dir"])
+
+    @property
+    def ui_runner_log_dir(self) -> Path:
+        return self.resolve_path(self.ui_runner["log_dir"])
+
+    @property
+    def ui_runner_require_confirmation(self) -> bool:
+        return bool(self.ui_runner.get("require_confirmation", True))
+
+    @property
+    def ui_runner_allowed_commands(self) -> tuple[str, ...]:
+        return tuple(str(command) for command in self.ui_runner.get("allowed_commands", []))
 
     @property
     def workflow_log_dir(self) -> Path:
@@ -200,7 +238,15 @@ def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[st
 def _validate_service_config(config: Mapping[str, Any]) -> None:
     if config.get("version") != EXPECTED_VERSION:
         raise ValueError(f"service config version must be {EXPECTED_VERSION}.")
-    for section in ["server", "database", "artifacts", "security", "scheduler", "workflows"]:
+    for section in [
+        "server",
+        "database",
+        "artifacts",
+        "security",
+        "scheduler",
+        "ui_runner",
+        "workflows",
+    ]:
         if section not in config or not isinstance(config[section], dict):
             raise ValueError(f"service config section {section!r} must be a mapping.")
     if str(config["server"].get("host", "")) != "127.0.0.1":
@@ -215,7 +261,27 @@ def _validate_service_config(config: Mapping[str, Any]) -> None:
     if unknown:
         raise ValueError(f"Unknown service artifact kind(s): {', '.join(unknown)}")
     _assert_no_plaintext_secrets(config)
+    _validate_ui_runner(config["ui_runner"])
     _validate_workflows(config["workflows"])
+
+
+def _validate_ui_runner(config: Mapping[str, Any]) -> None:
+    if not isinstance(config.get("enabled"), bool):
+        raise ValueError("ui_runner.enabled must be a boolean.")
+    if config.get("max_concurrent_runs") != 1:
+        raise ValueError("ui_runner.max_concurrent_runs must be 1.")
+    for key in ["history_dir", "log_dir"]:
+        value = config.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"ui_runner.{key} must be non-empty.")
+    allowed_commands = config.get("allowed_commands", [])
+    if not isinstance(allowed_commands, list) or not all(
+        isinstance(command, str) for command in allowed_commands
+    ):
+        raise ValueError("ui_runner.allowed_commands must be list[str].")
+    unknown = sorted(set(allowed_commands).difference(_ALLOWED_UI_RUNNER_COMMANDS))
+    if unknown:
+        raise ValueError(f"Unknown ui_runner allowed command(s): {', '.join(unknown)}")
 
 
 def _validate_workflows(workflows: Mapping[str, Any]) -> None:

@@ -19,6 +19,37 @@ def test_service_config_loads_phase4_defaults() -> None:
     assert "scan" in config.known_artifact_kinds
 
 
+def test_service_config_loads_ui_runner_defaults() -> None:
+    config = load_service_config("configs/service.yaml")
+
+    assert config.ui_runner["enabled"] is False
+    assert config.ui_runner_enabled is False
+    assert config.ui_runner_max_concurrent_runs == 1
+    assert config.ui_runner_history_dir == (
+        config.repo_root / "data/service/workflow-runs"
+    ).resolve()
+    assert config.ui_runner_log_dir == (
+        config.repo_root / "data/service/workflow-logs"
+    ).resolve()
+    assert config.ui_runner_allowed_commands == ("stock-report", "hs300-daily")
+
+
+def test_service_config_rejects_unknown_ui_runner_command(tmp_path: Path) -> None:
+    path = tmp_path / "service.yaml"
+    path.write_text(
+        """
+version: phase4.v1
+ui_runner:
+  allowed_commands:
+    - shell
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown ui_runner allowed command"):
+        load_service_config(path)
+
+
 def test_service_config_rejects_wrong_version(tmp_path: Path) -> None:
     path = tmp_path / "service.yaml"
     path.write_text("version: other\n", encoding="utf-8")
