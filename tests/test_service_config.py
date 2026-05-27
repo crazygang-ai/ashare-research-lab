@@ -50,6 +50,75 @@ ui_runner:
         load_service_config(path)
 
 
+def test_service_config_uses_ui_runner_defaults_when_section_missing(tmp_path: Path) -> None:
+    path = tmp_path / "service.yaml"
+    path.write_text("version: phase4.v1\n", encoding="utf-8")
+
+    config = load_service_config(path)
+
+    assert config.ui_runner_enabled is False
+    assert config.ui_runner_allowed_commands == ("stock-report", "hs300-daily")
+
+
+@pytest.mark.parametrize("value", ['"false"', "0"])
+def test_service_config_rejects_non_bool_ui_runner_require_confirmation(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    path = tmp_path / "service.yaml"
+    path.write_text(
+        f"""
+version: phase4.v1
+ui_runner:
+  require_confirmation: {value}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="ui_runner.require_confirmation"):
+        load_service_config(path)
+
+
+def test_service_config_rejects_bool_ui_runner_max_concurrent_runs(tmp_path: Path) -> None:
+    path = tmp_path / "service.yaml"
+    path.write_text(
+        """
+version: phase4.v1
+ui_runner:
+  max_concurrent_runs: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="ui_runner.max_concurrent_runs"):
+        load_service_config(path)
+
+
+def test_service_config_ui_runner_fields_do_not_trigger_secret_scanner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "service.yaml"
+    path.write_text(
+        """
+version: phase4.v1
+ui_runner:
+  enabled: true
+  max_concurrent_runs: 1
+  history_dir: data/service/workflow-runs
+  log_dir: data/service/workflow-logs
+  require_confirmation: true
+  allowed_commands:
+    - stock-report
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_service_config(path)
+
+    assert config.ui_runner_enabled is True
+    assert config.ui_runner_allowed_commands == ("stock-report",)
+
+
 def test_service_config_rejects_wrong_version(tmp_path: Path) -> None:
     path = tmp_path / "service.yaml"
     path.write_text("version: other\n", encoding="utf-8")

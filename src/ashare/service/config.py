@@ -268,8 +268,11 @@ def _validate_service_config(config: Mapping[str, Any]) -> None:
 def _validate_ui_runner(config: Mapping[str, Any]) -> None:
     if not isinstance(config.get("enabled"), bool):
         raise ValueError("ui_runner.enabled must be a boolean.")
-    if config.get("max_concurrent_runs") != 1:
+    max_concurrent_runs = config.get("max_concurrent_runs")
+    if type(max_concurrent_runs) is not int or max_concurrent_runs != 1:
         raise ValueError("ui_runner.max_concurrent_runs must be 1.")
+    if not isinstance(config.get("require_confirmation"), bool):
+        raise ValueError("ui_runner.require_confirmation must be a boolean.")
     for key in ["history_dir", "log_dir"]:
         value = config.get(key)
         if not isinstance(value, str) or not value.strip():
