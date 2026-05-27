@@ -17,7 +17,7 @@
 
 ## 当前可用边界
 
-当前仓库可以作为个人本地离线 MVP 使用。真实 AkShare 链路已能跑通沪深 300 当前成分快照、日线、估值、因子、验证、扫描、评分和单股报告。
+当前仓库可以作为个人本地离线 MVP 使用。真实 AkShare 链路已能跑通沪深 300 当前成分快照、日线、估值、因子、验证、扫描、评分和单股报告。仓库还包含本地 FastAPI 查询服务和 React/Vite 研究工作台，用于查看报告、artifact、UI run history，并通过受控表单创建本地研究运行。
 
 必须记住的限制：
 
@@ -25,6 +25,7 @@
 - `--universe-as-of` 早于真实快照日期时，本质是当前成分快照静态回填，有幸存者偏差。
 - 严格历史研究或正式回测需要 `historical_pit` universe。
 - `--max-symbols` 只用于 smoke / 调试；候选和评分排名只在样本内可比，不能解释为全量 HS300 研究结果。
+- Web UI 默认只读；`configs/service.yaml` 的 `ui_runner.enabled` 默认是 `false`，网页触发运行只限本机研究 workflow，不是交易入口。
 - 生成在 `data/` 下的 DuckDB、cache、report、snapshot 默认不入 Git。
 
 ## 开始工作前
@@ -61,6 +62,14 @@ conda run -n ashare-research-lab pytest -q
 
 ```bash
 conda run -n ashare-research-lab python -m compileall -q src/ashare tests
+```
+
+前端测试 / 构建：
+
+```bash
+cd frontend
+npm run test
+npm run build
 ```
 
 AkShare capability smoke：
@@ -140,8 +149,10 @@ src/ashare/scan/                  候选扫描
 src/ashare/scoring/               综合评分、硬过滤、validation gate
 src/ashare/backtest/              Top N 等权回测
 src/ashare/reports/               Markdown/CSV 报告
+src/ashare/service/               本地 FastAPI 查询服务、artifact registry、UI run 管理
 configs/                          因子、验证、评分、回测、服务配置
 docs/                             规划、数据字典、因子定义、回测假设
+frontend/                         React/Vite 本地研究工作台
 tests/                            单元和 CLI 测试
 ```
 
@@ -152,7 +163,8 @@ tests/                            单元和 CLI 测试
 - 改因子公式时，同步更新 `configs/data_dictionary.yaml`、测试和因子定义文档。
 - 改 scoring gate 时，同步检查 `configs/scoring.yaml` 和评分相关测试。
 - 改 backtest 假设时，同步更新 `docs/backtest_assumptions.md`。
-- 不要把真实数据、cache、DuckDB、报告产物、LLM 原始响应提交到 Git。
+- 改 service 或 frontend 行为时，同步更新 README 或相关文档，并跑对应 Python / frontend 测试。
+- 不要把真实数据、cache、DuckDB、报告产物、UI workflow logs、LLM 原始响应提交到 Git。
 - 不要把 API key、token、密码写入仓库。
 
 ## 输出解释口径
