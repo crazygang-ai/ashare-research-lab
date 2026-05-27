@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
+import threading
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -11,13 +14,16 @@ from ashare.service.config import load_service_config
 from ashare.service.ui_runs import (
     Hs300DailyRunRequest,
     StockReportRunRequest,
+    UIRunAlreadyRunningError,
     UIRunRecord,
     UIRunStatus,
     build_hs300_daily_command,
     build_stock_report_command,
     create_ui_run,
+    execute_ui_run,
     list_ui_runs,
     read_ui_run,
+    stream_log_events,
     write_ui_run,
 )
 
@@ -278,6 +284,144 @@ def test_create_ui_run_generates_unique_ids_for_same_microsecond(
     )
 
     assert first.ui_run_id != second.ui_run_id
+
+
+def test_execute_ui_run_writes_stdout_and_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    run = _queued_hs300_run(config)
+    monkeypatch.setattr(
+        "ashare.service.ui_runs.command_for_run",
+        lambda config, run: [
+            sys.executable,
+            "-c",
+            "print('ui stdout line')",
+        ],
+    )
+
+    result = execute_ui_run(config, run.ui_run_id)
+
+    assert result.status == UIRunStatus.SUCCESS
+    assert result.started_at is not None
+    assert result.finished_at is not None
+    assert result.command_preview == [
+        sys.executable,
+        "-c",
+        "print('ui stdout line')",
+    ]
+    assert len(result.log_paths) == 1
+    log_path = Path(result.log_paths[0])
+    assert log_path.read_text(encoding="utf-8") == "ui stdout line\n"
+    saved = read_ui_run(config, run.ui_run_id)
+    assert saved is not None
+    assert saved.status == UIRunStatus.SUCCESS
+
+
+def test_execute_ui_run_marks_failed_on_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    run = _queued_hs300_run(config)
+    monkeypatch.setattr(
+        "ashare.service.ui_runs.command_for_run",
+        lambda config, run: [
+            sys.executable,
+            "-c",
+            "print('failure line'); raise SystemExit(7)",
+        ],
+    )
+
+    result = execute_ui_run(config, run.ui_run_id)
+
+    assert result.status == UIRunStatus.FAILED
+    assert result.error_code == "command_failed"
+    assert result.error_message is not None
+    assert "exit code 7" in result.error_message
+    assert Path(result.log_paths[0]).read_text(encoding="utf-8") == "failure line\n"
+    saved = read_ui_run(config, run.ui_run_id)
+    assert saved is not None
+    assert saved.status == UIRunStatus.FAILED
+
+
+def test_execute_ui_run_rejects_concurrent_mutating_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    first = _queued_hs300_run(config)
+    second = _queued_hs300_run(config)
+    monkeypatch.setattr(
+        "ashare.service.ui_runs.command_for_run",
+        lambda config, run: [
+            sys.executable,
+            "-c",
+            "import time; print('started', flush=True); time.sleep(0.5)",
+        ],
+    )
+    thread_errors: list[BaseException] = []
+
+    def run_first() -> None:
+        try:
+            execute_ui_run(config, first.ui_run_id)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            thread_errors.append(exc)
+
+    worker = threading.Thread(target=run_first)
+    worker.start()
+    try:
+        _wait_for_status(config, first.ui_run_id, UIRunStatus.RUNNING)
+        with pytest.raises(UIRunAlreadyRunningError):
+            execute_ui_run(config, second.ui_run_id)
+    finally:
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert thread_errors == []
+
+
+def test_stream_log_events_reads_existing_log(tmp_path: Path) -> None:
+    log_path = tmp_path / "main.log"
+    log_path.write_text("first line\nsecond line\n", encoding="utf-8")
+
+    events = stream_log_events(log_path, UIRunStatus.SUCCESS)
+
+    assert events == [
+        {"type": "log", "message": "first line"},
+        {"type": "log", "message": "second line"},
+        {"type": "status", "status": "success"},
+    ]
+
+
+def _queued_hs300_run(config) -> UIRunRecord:
+    return create_ui_run(
+        config,
+        task_type="hs300-daily",
+        params={
+            "as_of": "2026-05-22",
+            "stock_code": "002594.SZ",
+            "cache_mode": "use",
+            "confirmed": True,
+        },
+    )
+
+
+def _wait_for_status(
+    config,
+    ui_run_id: str,
+    expected_status: UIRunStatus,
+    *,
+    timeout_seconds: float = 3.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        run = read_ui_run(config, ui_run_id)
+        if run is not None and run.status == expected_status:
+            return
+        time.sleep(0.01)
+    pytest.fail(f"Timed out waiting for {ui_run_id} to become {expected_status.value}")
 
 
 def _config(tmp_path: Path):

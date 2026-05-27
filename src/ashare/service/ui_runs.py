@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from enum import StrEnum
 import json
 from pathlib import Path
 import re
+import subprocess
+import threading
 from typing import Any
 import uuid
 
@@ -19,6 +21,7 @@ from ashare.service.schemas import jsonable
 
 _UI_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _STOCK_CODE_PATTERN = r"^\d{6}\.(SH|SZ)$"
+UI_RUN_LOCK = threading.Lock()
 
 
 def _strip_non_empty(value: str, *, field_kind: str) -> str:
@@ -40,6 +43,10 @@ class UIRunStatus(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class UIRunAlreadyRunningError(RuntimeError):
+    """Raised when the single MVP UI runner slot is already occupied."""
 
 
 class StockReportRunRequest(BaseModel):
@@ -242,6 +249,14 @@ def create_ui_run(
     return run
 
 
+def command_for_run(config: ServiceConfig, run: UIRunRecord) -> list[str]:
+    if run.task_type == "stock-report":
+        return build_stock_report_command(config, StockReportRunRequest(**run.params))
+    if run.task_type == "hs300-daily":
+        return build_hs300_daily_command(config, Hs300DailyRunRequest(**run.params))
+    raise ValueError(f"Unsupported UI task type: {run.task_type}")
+
+
 def write_ui_run(config: ServiceConfig, run: UIRunRecord) -> Path:
     config.ui_runner_history_dir.mkdir(parents=True, exist_ok=True)
     path = config.ui_runner_history_dir / f"{run.ui_run_id}.json"
@@ -250,6 +265,16 @@ def write_ui_run(config: ServiceConfig, run: UIRunRecord) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def update_ui_run(
+    config: ServiceConfig,
+    run: UIRunRecord,
+    **changes: Any,
+) -> UIRunRecord:
+    updated = replace(run, **changes)
+    write_ui_run(config, updated)
+    return updated
 
 
 def read_ui_run(config: ServiceConfig, ui_run_id: str) -> UIRunRecord | None:
@@ -281,6 +306,100 @@ def list_ui_runs(config: ServiceConfig, limit: int = 50) -> list[UIRunRecord]:
             continue
     records.sort(key=lambda item: item[0], reverse=True)
     return [record for _, record in records[:limit]]
+
+
+def execute_ui_run(config: ServiceConfig, ui_run_id: str) -> UIRunRecord:
+    if not UI_RUN_LOCK.acquire(blocking=False):
+        raise UIRunAlreadyRunningError("A UI run is already running.")
+
+    try:
+        run = read_ui_run(config, ui_run_id)
+        if run is None:
+            raise FileNotFoundError(ui_run_id)
+
+        command = command_for_run(config, run)
+        log_dir = config.ui_runner_log_dir / run.ui_run_id
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "main.log"
+
+        started_at = _now()
+        run = update_ui_run(
+            config,
+            run,
+            status=UIRunStatus.RUNNING,
+            started_at=started_at,
+            command_preview=command,
+            log_paths=[str(log_path)],
+            error_code=None,
+            error_message=None,
+            steps=[
+                *run.steps,
+                {
+                    "name": "execute",
+                    "status": UIRunStatus.RUNNING.value,
+                    "started_at": started_at,
+                },
+            ],
+        )
+
+        with log_path.open("w", encoding="utf-8") as log_file:
+            process = subprocess.Popen(
+                command,
+                cwd=config.repo_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                shell=False,
+                bufsize=1,
+            )
+            if process.stdout is not None:
+                for line in process.stdout:
+                    log_file.write(line)
+                    log_file.flush()
+            return_code = process.wait()
+
+        finished_at = _now()
+        final_step_status = (
+            UIRunStatus.SUCCESS.value
+            if return_code == 0
+            else UIRunStatus.FAILED.value
+        )
+        steps = [
+            *run.steps[:-1],
+            {
+                **run.steps[-1],
+                "status": final_step_status,
+                "finished_at": finished_at,
+            },
+        ]
+        if return_code == 0:
+            return update_ui_run(
+                config,
+                run,
+                status=UIRunStatus.SUCCESS,
+                finished_at=finished_at,
+                steps=steps,
+            )
+        return update_ui_run(
+            config,
+            run,
+            status=UIRunStatus.FAILED,
+            finished_at=finished_at,
+            steps=steps,
+            error_code="command_failed",
+            error_message=f"Command failed with exit code {return_code}.",
+        )
+    finally:
+        UI_RUN_LOCK.release()
+
+
+def stream_log_events(log_path: Path, status: UIRunStatus) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if log_path.is_file():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            events.append({"type": "log", "message": line})
+    events.append({"type": "status", "status": status.value})
+    return events
 
 
 def _record_from_dict(data: dict[str, Any]) -> UIRunRecord:
