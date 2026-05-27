@@ -15,6 +15,7 @@ from ashare.service.ui_runs import (
     Hs300DailyRunRequest,
     StockReportRunRequest,
     UIRunAlreadyRunningError,
+    UI_RUN_LOCK,
     UIRunRecord,
     UIRunStatus,
     build_hs300_daily_command,
@@ -312,7 +313,8 @@ def test_execute_ui_run_writes_stdout_and_success(
         "print('ui stdout line')",
     ]
     assert len(result.log_paths) == 1
-    log_path = Path(result.log_paths[0])
+    assert not Path(result.log_paths[0]).is_absolute()
+    log_path = config.repo_root / result.log_paths[0]
     assert log_path.read_text(encoding="utf-8") == "ui stdout line\n"
     saved = read_ui_run(config, run.ui_run_id)
     assert saved is not None
@@ -340,7 +342,9 @@ def test_execute_ui_run_marks_failed_on_nonzero_exit(
     assert result.error_code == "command_failed"
     assert result.error_message is not None
     assert "exit code 7" in result.error_message
-    assert Path(result.log_paths[0]).read_text(encoding="utf-8") == "failure line\n"
+    assert (config.repo_root / result.log_paths[0]).read_text(encoding="utf-8") == (
+        "failure line\n"
+    )
     saved = read_ui_run(config, run.ui_run_id)
     assert saved is not None
     assert saved.status == UIRunStatus.FAILED
@@ -380,6 +384,100 @@ def test_execute_ui_run_rejects_concurrent_mutating_task(
 
     assert not worker.is_alive()
     assert thread_errors == []
+
+
+def test_execute_ui_run_marks_failed_when_popen_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    run = _queued_hs300_run(config)
+
+    def raise_file_not_found(*args, **kwargs):
+        raise FileNotFoundError("missing command")
+
+    monkeypatch.setattr("ashare.service.ui_runs.subprocess.Popen", raise_file_not_found)
+
+    result = execute_ui_run(config, run.ui_run_id)
+
+    assert result.status == UIRunStatus.FAILED
+    assert result.error_code == "command_exception"
+    assert result.error_message is not None
+    assert "missing command" in result.error_message
+    saved = read_ui_run(config, run.ui_run_id)
+    assert saved is not None
+    assert saved.status == UIRunStatus.FAILED
+    _assert_ui_run_lock_released()
+
+
+def test_execute_ui_run_terminates_process_when_stdout_iteration_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    run = _queued_hs300_run(config)
+    process = _FakeProcess(_ExplodingStdout())
+
+    def fake_popen(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr("ashare.service.ui_runs.subprocess.Popen", fake_popen)
+
+    result = execute_ui_run(config, run.ui_run_id)
+
+    assert result.status == UIRunStatus.FAILED
+    assert result.error_code == "command_exception"
+    assert result.error_message is not None
+    assert "stdout exploded" in result.error_message
+    assert process.terminated is True
+    assert process.wait_calls >= 1
+    _assert_ui_run_lock_released()
+
+
+def test_execute_ui_run_marks_failed_for_log_dir_outside_repo_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, log_dir=tmp_path / "outside-logs")
+    run = _queued_hs300_run(config)
+    monkeypatch.setattr(
+        "ashare.service.ui_runs.command_for_run",
+        lambda config, run: [sys.executable, "-c", "print('should not run')"],
+    )
+
+    result = execute_ui_run(config, run.ui_run_id)
+
+    assert result.status == UIRunStatus.FAILED
+    assert result.error_code == "invalid_log_dir"
+    assert result.error_message is not None
+    assert "data" in result.error_message
+    saved = read_ui_run(config, run.ui_run_id)
+    assert saved is not None
+    assert saved.status == UIRunStatus.FAILED
+
+
+def test_execute_ui_run_uses_popen_with_shell_false(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    run = _queued_hs300_run(config)
+    popen_kwargs: dict[str, object] = {}
+
+    class EmptyStdout:
+        def __iter__(self):
+            return iter(())
+
+    def fake_popen(*args, **kwargs):
+        popen_kwargs.update(kwargs)
+        return _FakeProcess(EmptyStdout(), return_code=0)
+
+    monkeypatch.setattr("ashare.service.ui_runs.subprocess.Popen", fake_popen)
+
+    result = execute_ui_run(config, run.ui_run_id)
+
+    assert result.status == UIRunStatus.SUCCESS
+    assert popen_kwargs["shell"] is False
 
 
 def test_stream_log_events_reads_existing_log(tmp_path: Path) -> None:
@@ -424,14 +522,42 @@ def _wait_for_status(
     pytest.fail(f"Timed out waiting for {ui_run_id} to become {expected_status.value}")
 
 
-def _config(tmp_path: Path):
+def _assert_ui_run_lock_released() -> None:
+    assert UI_RUN_LOCK.acquire(blocking=False)
+    UI_RUN_LOCK.release()
+
+
+class _ExplodingStdout:
+    def __iter__(self):
+        raise RuntimeError("stdout exploded")
+
+
+class _FakeProcess:
+    def __init__(self, stdout, *, return_code: int = 0) -> None:
+        self.stdout = stdout
+        self.return_code = return_code
+        self.terminated = False
+        self.wait_calls = 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout=None) -> int:
+        del timeout
+        self.wait_calls += 1
+        return self.return_code
+
+
+def _config(tmp_path: Path, *, log_dir: str | Path | None = None):
+    if log_dir is None:
+        log_dir = f"data/service/test-workflow-logs/{tmp_path.name}"
     return load_service_config(
         "configs/service.yaml",
         overrides={
             "ui_runner": {
                 "enabled": True,
                 "history_dir": str(tmp_path / "runs"),
-                "log_dir": str(tmp_path / "logs"),
+                "log_dir": str(log_dir),
             }
         },
     )

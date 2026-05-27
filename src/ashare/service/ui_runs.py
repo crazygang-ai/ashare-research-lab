@@ -260,10 +260,12 @@ def command_for_run(config: ServiceConfig, run: UIRunRecord) -> list[str]:
 def write_ui_run(config: ServiceConfig, run: UIRunRecord) -> Path:
     config.ui_runner_history_dir.mkdir(parents=True, exist_ok=True)
     path = config.ui_runner_history_dir / f"{run.ui_run_id}.json"
-    path.write_text(
+    temp_path = config.ui_runner_history_dir / f".{run.ui_run_id}.tmp"
+    temp_path.write_text(
         json.dumps(run.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    temp_path.replace(path)
     return path
 
 
@@ -318,9 +320,27 @@ def execute_ui_run(config: ServiceConfig, ui_run_id: str) -> UIRunRecord:
             raise FileNotFoundError(ui_run_id)
 
         command = command_for_run(config, run)
-        log_dir = config.ui_runner_log_dir / run.ui_run_id
+        base_log_dir = config.ui_runner_log_dir.resolve()
+        repo_data_dir = (config.repo_root / "data").resolve()
+        if not base_log_dir.is_relative_to(repo_data_dir):
+            finished_at = _now()
+            return update_ui_run(
+                config,
+                run,
+                status=UIRunStatus.FAILED,
+                finished_at=finished_at,
+                command_preview=command,
+                steps=_finished_steps(run, UIRunStatus.FAILED, finished_at),
+                error_code="invalid_log_dir",
+                error_message=(
+                    "UI runner log_dir must resolve under the repository data directory."
+                ),
+            )
+
+        log_dir = base_log_dir / run.ui_run_id
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "main.log"
+        relative_log_path = config.repo_relative(log_path)
 
         started_at = _now()
         run = update_ui_run(
@@ -329,7 +349,7 @@ def execute_ui_run(config: ServiceConfig, ui_run_id: str) -> UIRunRecord:
             status=UIRunStatus.RUNNING,
             started_at=started_at,
             command_preview=command,
-            log_paths=[str(log_path)],
+            log_paths=[relative_log_path],
             error_code=None,
             error_message=None,
             steps=[
@@ -342,50 +362,52 @@ def execute_ui_run(config: ServiceConfig, ui_run_id: str) -> UIRunRecord:
             ],
         )
 
-        with log_path.open("w", encoding="utf-8") as log_file:
-            process = subprocess.Popen(
-                command,
-                cwd=config.repo_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                shell=False,
-                bufsize=1,
+        process: subprocess.Popen[str] | None = None
+        try:
+            with log_path.open("w", encoding="utf-8") as log_file:
+                process = subprocess.Popen(
+                    command,
+                    cwd=config.repo_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    shell=False,
+                    bufsize=1,
+                )
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        log_file.write(line)
+                        log_file.flush()
+                return_code = process.wait()
+        except Exception as exc:
+            if process is not None:
+                _terminate_process(process)
+            finished_at = _now()
+            return update_ui_run(
+                config,
+                run,
+                status=UIRunStatus.FAILED,
+                finished_at=finished_at,
+                steps=_finished_steps(run, UIRunStatus.FAILED, finished_at),
+                error_code="command_exception",
+                error_message=str(exc),
             )
-            if process.stdout is not None:
-                for line in process.stdout:
-                    log_file.write(line)
-                    log_file.flush()
-            return_code = process.wait()
 
         finished_at = _now()
-        final_step_status = (
-            UIRunStatus.SUCCESS.value
-            if return_code == 0
-            else UIRunStatus.FAILED.value
-        )
-        steps = [
-            *run.steps[:-1],
-            {
-                **run.steps[-1],
-                "status": final_step_status,
-                "finished_at": finished_at,
-            },
-        ]
         if return_code == 0:
             return update_ui_run(
                 config,
                 run,
                 status=UIRunStatus.SUCCESS,
                 finished_at=finished_at,
-                steps=steps,
+                steps=_finished_steps(run, UIRunStatus.SUCCESS, finished_at),
             )
         return update_ui_run(
             config,
             run,
             status=UIRunStatus.FAILED,
             finished_at=finished_at,
-            steps=steps,
+            steps=_finished_steps(run, UIRunStatus.FAILED, finished_at),
             error_code="command_failed",
             error_message=f"Command failed with exit code {return_code}.",
         )
@@ -400,6 +422,40 @@ def stream_log_events(log_path: Path, status: UIRunStatus) -> list[dict[str, Any
             events.append({"type": "log", "message": line})
     events.append({"type": "status", "status": status.value})
     return events
+
+
+def _finished_steps(
+    run: UIRunRecord,
+    status: UIRunStatus,
+    finished_at: str,
+) -> list[dict[str, Any]]:
+    if not run.steps:
+        return [
+            {
+                "name": "execute",
+                "status": status.value,
+                "finished_at": finished_at,
+            }
+        ]
+    return [
+        *run.steps[:-1],
+        {
+            **run.steps[-1],
+            "status": status.value,
+            "finished_at": finished_at,
+        },
+    ]
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    except Exception:
+        return
 
 
 def _record_from_dict(data: dict[str, Any]) -> UIRunRecord:
