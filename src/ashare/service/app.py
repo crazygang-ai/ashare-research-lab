@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 import os
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from ashare.service.artifacts import ArtifactRegistry
 from ashare.service.config import load_service_config
@@ -20,6 +21,16 @@ from ashare.service.queries import (
 )
 from ashare.service.schemas import with_research_flags
 from ashare.service.ui import render_index_html
+from ashare.service.ui_runs import (
+    Hs300DailyRunRequest,
+    StockReportRunRequest,
+    UIRunAlreadyRunningError,
+    create_ui_run,
+    execute_ui_run,
+    list_ui_runs,
+    read_ui_run,
+    stream_log_events,
+)
 from ashare.service.workflows import (
     WorkflowDatabaseConflictError,
     WorkflowDisabledError,
@@ -76,6 +87,97 @@ def create_app(
                 },
             }
         )
+
+    @app.get("/api/v1/ui/config")
+    def ui_config() -> dict[str, Any]:
+        return with_research_flags(
+            {
+                "api_base_url": "http://127.0.0.1:8008",
+                "database": {
+                    "db_path": config.repo_relative(config.database_path),
+                    "read_only": config.database_read_only,
+                    "available": database_available(config),
+                },
+                "artifact_roots": [config.repo_relative(root) for root in config.artifact_roots],
+                "ui_runner": {
+                    "enabled": config.ui_runner_enabled,
+                    "history_dir": config.repo_relative(config.ui_runner_history_dir),
+                    "log_dir": config.repo_relative(config.ui_runner_log_dir),
+                    "allowed_commands": list(config.ui_runner_allowed_commands),
+                    "require_confirmation": config.ui_runner_require_confirmation,
+                },
+                "research_notices": [
+                    "candidate list is not a trading instruction",
+                    "composite score is not a trading instruction",
+                    "backtest is a historical simulation, not a performance promise",
+                    "stock report is for research review only",
+                    "AkShare HS300 members are a current snapshot, not strict historical PIT.",
+                ],
+            }
+        )
+
+    @app.post("/api/v1/ui/runs/stock-report")
+    def ui_stock_report_run(payload: StockReportRunRequest) -> JSONResponse:
+        if not config.ui_runner_enabled:
+            return _error(403, "ui_runner_disabled", "UI runner is disabled.")
+        try:
+            run = create_ui_run(config, task_type="stock-report", params=payload.model_dump())
+        except ValueError as exc:
+            return _error(422, "invalid_params", str(exc))
+        return _json({"run": run.to_dict()})
+
+    @app.post("/api/v1/ui/runs/hs300-daily")
+    def ui_hs300_daily_run(payload: Hs300DailyRunRequest) -> JSONResponse:
+        if not config.ui_runner_enabled:
+            return _error(403, "ui_runner_disabled", "UI runner is disabled.")
+        try:
+            run = create_ui_run(config, task_type="hs300-daily", params=payload.model_dump())
+        except ValueError as exc:
+            return _error(422, "invalid_params", str(exc))
+        return _json({"run": run.to_dict()})
+
+    @app.get("/api/v1/ui/runs")
+    def ui_runs(limit: int = Query(50, ge=1)) -> JSONResponse:
+        runs = [run.to_dict() for run in list_ui_runs(config, limit=min(limit, 100))]
+        return _json({"runs": runs})
+
+    @app.get("/api/v1/ui/runs/{ui_run_id}")
+    def ui_run_detail(ui_run_id: str) -> JSONResponse:
+        run = read_ui_run(config, ui_run_id)
+        if run is None:
+            return _error(404, "ui_run_not_found", "UI run not found.")
+        return _json({"run": run.to_dict()})
+
+    @app.post("/api/v1/ui/runs/{ui_run_id}/execute")
+    def ui_run_execute(ui_run_id: str) -> JSONResponse:
+        if not config.ui_runner_enabled:
+            return _error(403, "ui_runner_disabled", "UI runner is disabled.")
+        try:
+            run = execute_ui_run(config, ui_run_id)
+        except UIRunAlreadyRunningError as exc:
+            return _error(409, "workflow_already_running", str(exc))
+        except FileNotFoundError as exc:
+            return _error(404, "ui_run_not_found", str(exc))
+        return _json({"run": run.to_dict()})
+
+    @app.get("/api/v1/ui/runs/{ui_run_id}/logs/stream")
+    def ui_run_log_stream(ui_run_id: str) -> Response:
+        run = read_ui_run(config, ui_run_id)
+        if run is None:
+            return _error(404, "ui_run_not_found", "UI run not found.")
+        if not run.log_paths:
+            return _error(404, "log_not_found", "No log path has been recorded for this UI run.")
+
+        log_path = (config.repo_root / run.log_paths[0]).resolve()
+        log_dir = config.ui_runner_log_dir.resolve()
+        if not log_path.is_relative_to(log_dir) or not log_path.is_file():
+            return _error(404, "log_not_found", "UI run log not found.")
+
+        def event_source():
+            for event in stream_log_events(log_path, status=run.status):
+                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+
+        return StreamingResponse(event_source(), media_type="text/event-stream")
 
     @app.get("/api/v1/artifacts")
     def artifacts(kind: str | None = None, limit: int = Query(20, ge=1)) -> JSONResponse:

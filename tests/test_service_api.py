@@ -7,6 +7,7 @@ import duckdb
 from fastapi.testclient import TestClient
 
 from ashare.service.app import create_app
+from ashare.service.ui_runs import UIRunRecord, UIRunStatus, write_ui_run
 from ashare.storage.db import init_db
 
 
@@ -123,6 +124,177 @@ def test_workflow_api_token_order_and_header(monkeypatch, tmp_path: Path) -> Non
     assert wrong.status_code == 401
     assert ok_auth_disabled_workflow.status_code == 409
     assert ok_auth_disabled_workflow.json()["error_code"] == "workflow_disabled"
+
+
+def test_ui_config_endpoint_reports_safe_defaults(tmp_path: Path) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "database": {"db_path": str(tmp_path / "ashare.duckdb")},
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/ui/config")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["research_only"] is True
+    assert payload["ui_runner"]["enabled"] is False
+    assert "candidate list is not a trading instruction" in payload["research_notices"]
+
+
+def test_ui_run_post_rejects_when_runner_disabled(tmp_path: Path) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {"enabled": False},
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ui/runs/stock-report",
+        json={
+            "stock_code": "002594.SZ",
+            "as_of": "2026-05-22",
+            "source_run_id": "factor",
+            "score_run_id": "score",
+            "scan_run_id": "scan",
+            "db_path": "data/processed/hs300_daily.duckdb",
+            "output_dir": "data/reports/generated/ui/stock",
+            "run_id": "stock-ui",
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "ui_runner_disabled"
+
+
+def test_ui_run_history_endpoint_lists_created_run(tmp_path: Path) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {
+                "enabled": True,
+                "history_dir": str(tmp_path / "runs"),
+                "log_dir": "data/service/test-api-ui-logs/history",
+            },
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/v1/ui/runs/hs300-daily",
+        json={
+            "as_of": "2026-05-22",
+            "stock_code": "002594.SZ",
+            "cache_mode": "use",
+            "confirmed": True,
+        },
+    )
+
+    assert created.status_code == 200
+    run = created.json()["run"]
+    assert run["status"] == "queued"
+    runs = client.get("/api/v1/ui/runs")
+    assert runs.status_code == 200
+    assert runs.json()["runs"][0]["ui_run_id"] == run["ui_run_id"]
+    assert runs.json()["runs"][0]["task_type"] == "hs300-daily"
+    detail = client.get(f"/api/v1/ui/runs/{run['ui_run_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["run"]["ui_run_id"] == run["ui_run_id"]
+
+
+def test_ui_run_execute_endpoint_calls_execute_ui_run(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {
+                "enabled": True,
+                "history_dir": str(tmp_path / "runs"),
+                "log_dir": "data/service/test-api-ui-logs/execute",
+            },
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/ui/runs/hs300-daily",
+        json={
+            "as_of": "2026-05-22",
+            "stock_code": "002594.SZ",
+            "cache_mode": "use",
+            "confirmed": True,
+        },
+    )
+    ui_run_id = created.json()["run"]["ui_run_id"]
+    calls: list[str] = []
+
+    def fake_execute_ui_run(config, requested_ui_run_id: str) -> UIRunRecord:
+        calls.append(requested_ui_run_id)
+        return UIRunRecord(
+            ui_run_id=requested_ui_run_id,
+            task_type="hs300-daily",
+            status=UIRunStatus.SUCCESS,
+            params={"as_of": "2026-05-22"},
+            command_preview=["fake"],
+            created_at="2026-05-22T00:00:00+00:00",
+        )
+
+    monkeypatch.setattr("ashare.service.app.execute_ui_run", fake_execute_ui_run)
+
+    response = client.post(f"/api/v1/ui/runs/{ui_run_id}/execute")
+
+    assert response.status_code == 200
+    assert calls == [ui_run_id]
+    assert response.json()["run"]["status"] == "success"
+
+
+def test_ui_run_log_stream_returns_sse_events(tmp_path: Path) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {
+                "enabled": True,
+                "history_dir": str(tmp_path / "runs"),
+                "log_dir": "data/service/test-api-ui-logs/stream",
+            },
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    config = app.state.service_config
+    log_dir = config.ui_runner_log_dir / "ui-run-with-log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "main.log"
+    log_path.write_text("first log line\n", encoding="utf-8")
+    write_ui_run(
+        config,
+        UIRunRecord(
+            ui_run_id="ui-run-with-log",
+            task_type="hs300-daily",
+            status=UIRunStatus.SUCCESS,
+            params={"as_of": "2026-05-22"},
+            command_preview=["fake"],
+            created_at="2026-05-22T00:00:00+00:00",
+            log_paths=[config.repo_relative(log_path)],
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/ui/runs/ui-run-with-log/logs/stream")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert 'data: {"type": "log", "message": "first log line"}' in response.text
+    assert 'data: {"type": "status", "status": "success"}' in response.text
 
 
 def _write_artifacts(root: Path) -> None:
