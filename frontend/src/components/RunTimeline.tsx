@@ -1,9 +1,12 @@
 import type { UiRunRecord } from "../api/client";
+import { useI18n } from "../i18n";
 import StatusBadge from "./StatusBadge";
 
 export default function RunTimeline({ run }: { run?: UiRunRecord }) {
+  const { t } = useI18n();
+
   if (!run) {
-    return <p className="text-sm text-ink-500">Select a run to inspect details.</p>;
+    return <p className="text-sm text-ink-500">{t("component.runTimeline.select")}</p>;
   }
 
   return (
@@ -26,7 +29,7 @@ export default function RunTimeline({ run }: { run?: UiRunRecord }) {
             </div>
           ))
         ) : (
-          <div className="rounded-md border border-dashed border-ink-300 bg-white p-3 text-sm text-ink-500">No steps recorded.</div>
+          <div className="rounded-md border border-dashed border-ink-300 bg-white p-3 text-sm text-ink-500">{t("component.runTimeline.empty")}</div>
         )}
       </div>
       {run.error_message ? <p className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{run.error_message}</p> : null}

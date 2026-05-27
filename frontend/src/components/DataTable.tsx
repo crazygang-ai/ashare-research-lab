@@ -1,14 +1,17 @@
+import { useI18n } from "../i18n";
+
 type DataTableProps = {
   rows?: Array<Record<string, unknown>>;
   maxRows?: number;
 };
 
 export default function DataTable({ rows = [], maxRows = 20 }: DataTableProps) {
+  const { t } = useI18n();
   const visibleRows = rows.slice(0, maxRows);
   const columns = Array.from(new Set(visibleRows.flatMap((row) => Object.keys(row)))).slice(0, 12);
 
   if (!visibleRows.length || !columns.length) {
-    return <p className="rounded-md border border-dashed border-ink-300 bg-white p-4 text-sm text-ink-500">No rows found.</p>;
+    return <p className="rounded-md border border-dashed border-ink-300 bg-white p-4 text-sm text-ink-500">{t("component.dataTable.empty")}</p>;
   }
 
   return (

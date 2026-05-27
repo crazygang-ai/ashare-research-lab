@@ -7,8 +7,10 @@ import CommandPreview from "../components/CommandPreview";
 import LogStream from "../components/LogStream";
 import RunTimeline from "../components/RunTimeline";
 import StatusBadge from "../components/StatusBadge";
+import { useI18n } from "../i18n";
 
 export default function RunsPage() {
+  const { t } = useI18n();
   const { uiRunId } = useParams();
   const queryClient = useQueryClient();
   const runsQuery = useQuery({ queryKey: ["ui-runs"], queryFn: fetchUiRuns, refetchInterval: 5000 });
@@ -32,7 +34,7 @@ export default function RunsPage() {
     <div className="grid gap-5 xl:grid-cols-[22rem_minmax(0,1fr)]">
       <aside className="rounded-md border border-ink-200 bg-white shadow-panel">
         <div className="border-b border-ink-200 px-4 py-3">
-          <h2 className="text-lg font-semibold">Runs</h2>
+          <h2 className="text-lg font-semibold">{t("page.runs.title")}</h2>
         </div>
         <div className="max-h-[calc(100dvh-12rem)] overflow-auto p-2">
           {runsQuery.data?.runs.length ? (
@@ -53,7 +55,7 @@ export default function RunsPage() {
               </Link>
             ))
           ) : (
-            <p className="p-3 text-sm text-ink-500">No UI runs found.</p>
+            <p className="p-3 text-sm text-ink-500">{t("page.runs.empty")}</p>
           )}
         </div>
       </aside>
@@ -62,7 +64,7 @@ export default function RunsPage() {
         <section className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">{selectedRun?.task_type ?? "Run Detail"}</h2>
+              <h2 className="text-lg font-semibold">{selectedRun?.task_type ?? t("page.runs.detail")}</h2>
               <p className="mt-1 font-mono text-xs text-ink-500">{selectedRun?.ui_run_id ?? "-"}</p>
             </div>
             <button
@@ -72,21 +74,21 @@ export default function RunsPage() {
               onClick={() => selectedRun && executeRun.mutate(selectedRun.ui_run_id)}
             >
               <Play className="h-4 w-4" aria-hidden="true" />
-              Execute
+              {t("page.runs.execute")}
             </button>
           </div>
         </section>
 
         <div className="grid gap-5 xl:grid-cols-2">
           <section className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
-            <h2 className="mb-3 text-base font-semibold">Timeline</h2>
+            <h2 className="mb-3 text-base font-semibold">{t("page.runs.timeline")}</h2>
             <RunTimeline run={selectedRun} />
           </section>
           <CommandPreview command={selectedRun?.command_preview} />
         </div>
 
         <section className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
-          <h2 className="mb-3 text-base font-semibold">Logs</h2>
+          <h2 className="mb-3 text-base font-semibold">{t("page.runs.logs")}</h2>
           <LogStream run={selectedRun} />
         </section>
       </div>

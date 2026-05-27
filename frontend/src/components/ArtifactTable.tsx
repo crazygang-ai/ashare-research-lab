@@ -6,33 +6,38 @@ import {
 } from "@tanstack/react-table";
 
 import type { ArtifactRecord } from "../api/client";
+import { useI18n, type TranslationKey } from "../i18n";
 
 const columnHelper = createColumnHelper<ArtifactRecord>();
 
-const columns = [
-  columnHelper.accessor("kind", {
-    header: "Kind",
-    cell: (info) => <span className="font-medium">{String(info.getValue())}</span>
-  }),
-  columnHelper.accessor("artifact_id", {
-    header: "Artifact ID",
-    cell: (info) => <span className="font-mono text-xs">{String(info.getValue())}</span>
-  }),
-  columnHelper.accessor("run_id", {
-    header: "Run ID",
-    cell: (info) => <span className="font-mono text-xs">{String(info.getValue() ?? "-")}</span>
-  }),
-  columnHelper.accessor("as_of_date", {
-    header: "As Of",
-    cell: (info) => String(info.getValue() ?? "-")
-  }),
-  columnHelper.accessor("path", {
-    header: "Path",
-    cell: (info) => <span className="font-mono text-xs">{String(info.getValue())}</span>
-  })
-];
+function createArtifactColumns(t: (key: TranslationKey) => string) {
+  return [
+    columnHelper.accessor("kind", {
+      header: t("component.artifactTable.kind"),
+      cell: (info) => <span className="font-medium">{String(info.getValue())}</span>
+    }),
+    columnHelper.accessor("artifact_id", {
+      header: t("component.artifactTable.artifactId"),
+      cell: (info) => <span className="font-mono text-xs">{String(info.getValue())}</span>
+    }),
+    columnHelper.accessor("run_id", {
+      header: t("component.artifactTable.runId"),
+      cell: (info) => <span className="font-mono text-xs">{String(info.getValue() ?? "-")}</span>
+    }),
+    columnHelper.accessor("as_of_date", {
+      header: t("component.artifactTable.asOf"),
+      cell: (info) => String(info.getValue() ?? "-")
+    }),
+    columnHelper.accessor("path", {
+      header: t("component.artifactTable.path"),
+      cell: (info) => <span className="font-mono text-xs">{String(info.getValue())}</span>
+    })
+  ];
+}
 
 export default function ArtifactTable({ artifacts }: { artifacts: ArtifactRecord[] }) {
+  const { t } = useI18n();
+  const columns = createArtifactColumns(t);
   const table = useReactTable({
     data: artifacts,
     columns,
@@ -40,7 +45,7 @@ export default function ArtifactTable({ artifacts }: { artifacts: ArtifactRecord
   });
 
   if (!artifacts.length) {
-    return <p className="rounded-md border border-dashed border-ink-300 bg-white p-4 text-sm text-ink-500">No artifacts found.</p>;
+    return <p className="rounded-md border border-dashed border-ink-300 bg-white p-4 text-sm text-ink-500">{t("component.artifactTable.empty")}</p>;
   }
 
   return (

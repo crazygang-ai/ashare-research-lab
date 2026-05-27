@@ -13,24 +13,31 @@ import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
 import { fetchUiConfig } from "../api/client";
+import { useI18n, type Language, type TranslationKey } from "../i18n";
 import StatusBadge from "./StatusBadge";
 
 type NavItem = {
-  label: string;
+  labelKey: TranslationKey;
   to: string;
   icon: typeof Home;
 };
 
 const navItems: NavItem[] = [
-  { label: "Today", to: "/", icon: Home },
-  { label: "Stocks", to: "/stocks", icon: BarChart3 },
-  { label: "Reports", to: "/reports", icon: FileText },
-  { label: "Runs", to: "/runs", icon: ListChecks },
-  { label: "Artifacts", to: "/artifacts", icon: Database },
-  { label: "Settings", to: "/settings", icon: Settings }
+  { labelKey: "nav.today", to: "/", icon: Home },
+  { labelKey: "nav.stocks", to: "/stocks", icon: BarChart3 },
+  { labelKey: "nav.reports", to: "/reports", icon: FileText },
+  { labelKey: "nav.runs", to: "/runs", icon: ListChecks },
+  { labelKey: "nav.artifacts", to: "/artifacts", icon: Database },
+  { labelKey: "nav.settings", to: "/settings", icon: Settings }
+];
+
+const languageOptions: Array<{ value: Language; label: string }> = [
+  { value: "zh", label: "中文" },
+  { value: "en", label: "English" }
 ];
 
 export default function AppShell({ children }: { children: ReactNode }) {
+  const { language, setLanguage, t } = useI18n();
   const configQuery = useQuery({ queryKey: ["ui-config"], queryFn: fetchUiConfig });
   const config = configQuery.data;
   const notices = config?.research_notices ?? [
@@ -45,7 +52,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2"
       >
-        跳到内容
+        {t("app.skipToContent")}
       </a>
       <div className="flex min-h-dvh flex-col lg:flex-row">
         <aside className="border-b border-ink-200 bg-white lg:fixed lg:inset-y-0 lg:left-0 lg:w-64 lg:border-b-0 lg:border-r">
@@ -54,8 +61,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
               <Activity className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
-              <h1 className="text-base font-semibold">A 股研究工作台</h1>
-              <p className="text-xs text-ink-500">ashare-research-lab</p>
+              <h1 className="text-base font-semibold">{t("app.title")}</h1>
+              <p className="text-xs text-ink-500">{t("app.subtitle")}</p>
             </div>
           </div>
           <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:block lg:space-y-1 lg:overflow-visible">
@@ -76,7 +83,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   }
                 >
                   <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span>{item.label}</span>
+                  <span>{t(item.labelKey)}</span>
                 </NavLink>
               );
             })}
@@ -94,7 +101,29 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   </span>
                 ))}
               </div>
-              <div className="flex flex-wrap gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div
+                  className="inline-flex rounded-md border border-ink-300 bg-ink-100 p-1"
+                  role="group"
+                  aria-label={t("language.switcher")}
+                >
+                  {languageOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={[
+                        "min-h-8 rounded px-2 text-xs font-medium",
+                        language === option.value
+                          ? "bg-white text-ink-900 shadow-panel"
+                          : "text-ink-600 hover:text-ink-900"
+                      ].join(" ")}
+                      aria-pressed={language === option.value}
+                      onClick={() => setLanguage(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <StatusBadge status={config?.database.available ? "available" : "missing"} />
                 <StatusBadge status={config?.ui_runner.enabled ? "runner enabled" : "runner disabled"} />
               </div>

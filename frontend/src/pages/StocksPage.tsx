@@ -11,8 +11,10 @@ import {
 import CommandPreview from "../components/CommandPreview";
 import DataTable from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { useI18n } from "../i18n";
 
 export default function StocksPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: ["ui-config"], queryFn: fetchUiConfig });
   const [lookup, setLookup] = useState({
@@ -61,10 +63,10 @@ export default function StocksPage() {
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_28rem]">
       <div className="space-y-5">
         <section className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
-          <h2 className="text-lg font-semibold">Stocks</h2>
+          <h2 className="text-lg font-semibold">{t("page.stocks.title")}</h2>
           <form onSubmit={submitLookup} className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]">
             <label className="block text-sm font-medium">
-              Stock Code
+              {t("field.stockCode")}
               <input
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3 font-mono"
                 value={lookup.stock_code}
@@ -74,7 +76,7 @@ export default function StocksPage() {
               />
             </label>
             <label className="block text-sm font-medium">
-              As Of
+              {t("field.asOf")}
               <input
                 type="date"
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3"
@@ -84,7 +86,7 @@ export default function StocksPage() {
               />
             </label>
             <label className="block text-sm font-medium">
-              Source Run ID
+              {t("field.sourceRunId")}
               <input
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3 font-mono"
                 value={lookup.source_run_id}
@@ -97,12 +99,12 @@ export default function StocksPage() {
               className="mt-6 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
             >
               <Search className="h-4 w-4" aria-hidden="true" />
-              Lookup
+              {t("page.stocks.lookup")}
             </button>
           </form>
         </section>
         <section className="space-y-3">
-          <h2 className="text-base font-semibold">Factor Values</h2>
+          <h2 className="text-base font-semibold">{t("page.stocks.factorValues")}</h2>
           <DataTable rows={factorsQuery.data?.rows} maxRows={40} />
         </section>
       </div>
@@ -110,7 +112,7 @@ export default function StocksPage() {
       <aside className="space-y-4">
         <form onSubmit={submitReport} className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold">Stock Report Run</h2>
+            <h2 className="text-base font-semibold">{t("page.stocks.stockReportRun")}</h2>
             <StatusBadge status={runnerEnabled ? "runner enabled" : "runner disabled"} />
           </div>
           <fieldset className="space-y-3" disabled={!runnerEnabled || createRun.isPending}>
@@ -126,7 +128,7 @@ export default function StocksPage() {
                       }
                       required
                     />
-                    confirmed
+                    {t("field.confirmed")}
                   </label>
                 );
               }
@@ -153,7 +155,7 @@ export default function StocksPage() {
               className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FilePlus2 className="h-4 w-4" aria-hidden="true" />
-              Create Report Run
+              {t("page.stocks.createReportRun")}
             </button>
           </fieldset>
           {createRun.error ? <p className="mt-3 text-sm text-signal-red">{createRun.error.message}</p> : null}

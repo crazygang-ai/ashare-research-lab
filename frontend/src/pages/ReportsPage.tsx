@@ -3,10 +3,12 @@ import { useState } from "react";
 
 import { fetchLatestDailyReportMarkdown, fetchLatestStockReportMarkdown } from "../api/client";
 import ReportViewer from "../components/ReportViewer";
+import { useI18n } from "../i18n";
 
 type ReportKind = "daily" | "stock";
 
 export default function ReportsPage() {
+  const { t } = useI18n();
   const [kind, setKind] = useState<ReportKind>("daily");
   const dailyQuery = useQuery({
     queryKey: ["latest-daily-report-markdown"],
@@ -22,7 +24,7 @@ export default function ReportsPage() {
     <div className="space-y-5">
       <section className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-lg font-semibold">Reports</h2>
+          <h2 className="text-lg font-semibold">{t("page.reports.title")}</h2>
           <div className="inline-flex rounded-md border border-ink-300 bg-ink-100 p-1">
             {(["daily", "stock"] as const).map((item) => (
               <button
@@ -34,14 +36,14 @@ export default function ReportsPage() {
                 ].join(" ")}
                 onClick={() => setKind(item)}
               >
-                {item === "daily" ? "Daily" : "Stock"}
+                {item === "daily" ? t("page.reports.daily") : t("page.reports.stock")}
               </button>
             ))}
           </div>
         </div>
       </section>
       <ReportViewer
-        title={kind === "daily" ? "Daily Report" : "Stock Report"}
+        title={kind === "daily" ? t("page.reports.dailyReport") : t("page.reports.stockReport")}
         markdown={active.data}
         isLoading={active.isLoading}
         error={active.error}

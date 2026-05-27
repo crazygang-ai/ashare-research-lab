@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 
 import { openLogStream, type LogEvent } from "../api/logStream";
 import type { UiRunRecord } from "../api/client";
+import { useI18n } from "../i18n";
 
 export default function LogStream({ run }: { run?: UiRunRecord }) {
+  const { t } = useI18n();
   const [events, setEvents] = useState<LogEvent[]>([]);
 
   useEffect(() => {
@@ -17,7 +19,7 @@ export default function LogStream({ run }: { run?: UiRunRecord }) {
   }, [run?.ui_run_id, run?.log_paths.length]);
 
   if (!run?.log_paths.length) {
-    return <p className="rounded-md border border-dashed border-ink-300 bg-white p-4 text-sm text-ink-500">No log file recorded.</p>;
+    return <p className="rounded-md border border-dashed border-ink-300 bg-white p-4 text-sm text-ink-500">{t("component.logStream.empty")}</p>;
   }
 
   return (
@@ -25,7 +27,7 @@ export default function LogStream({ run }: { run?: UiRunRecord }) {
       {events.map((event, index) =>
         event.type === "log" ? `${event.message}\n` : `[${event.type}] ${JSON.stringify(event)}\n`
       )}
-      {!events.length ? "Waiting for log events...\n" : null}
+      {!events.length ? `${t("component.logStream.waiting")}\n` : null}
     </pre>
   );
 }

@@ -1,5 +1,7 @@
 import ReactMarkdown from "react-markdown";
 
+import { useI18n } from "../i18n";
+
 type ReportViewerProps = {
   title: string;
   markdown?: string;
@@ -8,14 +10,16 @@ type ReportViewerProps = {
 };
 
 export default function ReportViewer({ title, markdown, isLoading, error }: ReportViewerProps) {
+  const { t } = useI18n();
+
   return (
     <section className="rounded-md border border-ink-200 bg-white shadow-panel">
       <div className="border-b border-ink-200 px-4 py-3">
         <h2 className="text-sm font-semibold text-ink-900">{title}</h2>
       </div>
       <div className="max-h-[42rem] overflow-auto p-4">
-        {isLoading ? <p className="text-sm text-ink-500">Loading...</p> : null}
-        {error ? <p className="text-sm text-signal-red">Report is unavailable.</p> : null}
+        {isLoading ? <p className="text-sm text-ink-500">{t("component.reportViewer.loading")}</p> : null}
+        {error ? <p className="text-sm text-signal-red">{t("component.reportViewer.unavailable")}</p> : null}
         {markdown ? (
           <ReactMarkdown
             components={{

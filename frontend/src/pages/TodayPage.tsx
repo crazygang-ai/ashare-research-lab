@@ -14,6 +14,7 @@ import CommandPreview from "../components/CommandPreview";
 import DataTable from "../components/DataTable";
 import ReportViewer from "../components/ReportViewer";
 import StatusBadge from "../components/StatusBadge";
+import { useI18n } from "../i18n";
 
 type Hs300DailyForm = {
   as_of: string;
@@ -25,6 +26,7 @@ type Hs300DailyForm = {
 };
 
 export default function TodayPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: ["ui-config"], queryFn: fetchUiConfig });
   const scanQuery = useQuery({ queryKey: ["latest-scan"], queryFn: fetchLatestScan });
@@ -76,8 +78,8 @@ export default function TodayPage() {
         <section className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">Today</h2>
-              <p className="mt-1 text-sm text-ink-500">Daily research review</p>
+              <h2 className="text-lg font-semibold">{t("page.today.title")}</h2>
+              <p className="mt-1 text-sm text-ink-500">{t("page.today.subtitle")}</p>
             </div>
             <div className="flex gap-2">
               <StatusBadge status={scanQuery.data?.artifact_id ? "scan available" : "scan missing"} />
@@ -87,17 +89,17 @@ export default function TodayPage() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-base font-semibold">Scored Candidates</h2>
+          <h2 className="text-base font-semibold">{t("page.today.scoredCandidates")}</h2>
           <DataTable rows={scoringQuery.data?.rows} maxRows={12} />
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-base font-semibold">Candidate Scan</h2>
+          <h2 className="text-base font-semibold">{t("page.today.candidateScan")}</h2>
           <DataTable rows={scanQuery.data?.rows} maxRows={12} />
         </section>
 
         <ReportViewer
-          title="Daily Report"
+          title={t("page.today.dailyReport")}
           markdown={reportQuery.data}
           isLoading={reportQuery.isLoading}
           error={reportQuery.error}
@@ -107,12 +109,12 @@ export default function TodayPage() {
       <aside className="space-y-4">
         <form onSubmit={submit} className="rounded-md border border-ink-200 bg-white p-4 shadow-panel">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold">HS300 Daily Run</h2>
+            <h2 className="text-base font-semibold">{t("page.today.hs300DailyRun")}</h2>
             <StatusBadge status={runnerEnabled ? "runner enabled" : "runner disabled"} />
           </div>
           <fieldset className="space-y-3" disabled={!runnerEnabled || createRun.isPending}>
             <label className="block text-sm font-medium">
-              As Of
+              {t("field.asOf")}
               <input
                 type="date"
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3"
@@ -122,7 +124,7 @@ export default function TodayPage() {
               />
             </label>
             <label className="block text-sm font-medium">
-              Stock Code
+              {t("field.stockCode")}
               <input
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3 font-mono"
                 value={form.stock_code}
@@ -132,7 +134,7 @@ export default function TodayPage() {
               />
             </label>
             <label className="block text-sm font-medium">
-              Cache Mode
+              {t("field.cacheMode")}
               <select
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3"
                 value={form.cache_mode}
@@ -146,7 +148,7 @@ export default function TodayPage() {
               </select>
             </label>
             <label className="block text-sm font-medium">
-              Max Symbols
+              {t("field.maxSymbols")}
               <input
                 type="number"
                 min="1"
@@ -156,7 +158,7 @@ export default function TodayPage() {
               />
             </label>
             <label className="block text-sm font-medium">
-              Watchlist File
+              {t("field.watchlistFile")}
               <input
                 className="mt-1 min-h-11 w-full rounded-md border border-ink-300 px-3 font-mono"
                 value={form.watchlist_file}
@@ -170,14 +172,14 @@ export default function TodayPage() {
                 onChange={(event) => setForm((current) => ({ ...current, confirmed: event.target.checked }))}
                 required
               />
-              confirmed
+              {t("field.confirmed")}
             </label>
             <button
               type="submit"
               className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
-              Create Run
+              {t("page.today.createRun")}
             </button>
           </fieldset>
           {createRun.error ? <p className="mt-3 text-sm text-signal-red">{createRun.error.message}</p> : null}
@@ -193,7 +195,7 @@ export default function TodayPage() {
               onClick={() => createdRunId && executeRun.mutate(createdRunId)}
             >
               <Play className="h-4 w-4" aria-hidden="true" />
-              Execute Run
+              {t("page.today.executeRun")}
             </button>
           </>
         ) : null}
