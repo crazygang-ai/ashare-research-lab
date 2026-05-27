@@ -21,6 +21,19 @@ _UI_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _STOCK_CODE_PATTERN = r"^\d{6}\.(SH|SZ)$"
 
 
+def _strip_non_empty(value: str, *, field_kind: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_kind} must be non-empty.")
+    return stripped
+
+
+def _strip_optional_non_empty(value: str | None, *, field_kind: str) -> str | None:
+    if value is None:
+        return None
+    return _strip_non_empty(value, field_kind=field_kind)
+
+
 class UIRunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -48,13 +61,20 @@ class StockReportRunRequest(BaseModel):
         date.fromisoformat(value)
         return value
 
+    @field_validator("source_run_id", "score_run_id", "run_id")
+    @classmethod
+    def strip_non_empty_identifier(cls, value: str) -> str:
+        return _strip_non_empty(value, field_kind="identifier field")
+
+    @field_validator("scan_run_id")
+    @classmethod
+    def strip_optional_identifier(cls, value: str | None) -> str | None:
+        return _strip_optional_non_empty(value, field_kind="identifier field")
+
     @field_validator("db_path", "output_dir")
     @classmethod
     def strip_non_empty_path(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("path field must be non-empty.")
-        return stripped
+        return _strip_non_empty(value, field_kind="path field")
 
     @model_validator(mode="after")
     def require_confirmation(self) -> "StockReportRunRequest":
@@ -82,12 +102,7 @@ class Hs300DailyRunRequest(BaseModel):
     @field_validator("watchlist_file")
     @classmethod
     def strip_optional_path(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("path field must be non-empty.")
-        return stripped
+        return _strip_optional_non_empty(value, field_kind="path field")
 
     @model_validator(mode="after")
     def validate_request(self) -> "Hs300DailyRunRequest":

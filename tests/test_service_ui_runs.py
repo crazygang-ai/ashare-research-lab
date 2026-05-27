@@ -186,6 +186,42 @@ def test_request_models_reject_extra_fields() -> None:
 
 
 @pytest.mark.parametrize(
+    "field",
+    ["source_run_id", "score_run_id", "run_id", "scan_run_id"],
+)
+def test_stock_report_request_rejects_blank_identifiers(field: str) -> None:
+    params = {
+        "stock_code": "002594.SZ",
+        "as_of": "2026-05-22",
+        "source_run_id": "factor",
+        "score_run_id": "score",
+        "scan_run_id": "scan",
+        "output_dir": "data/reports/generated/ui/stock-002594-SZ",
+        "run_id": "stock-ui",
+        "confirmed": True,
+    }
+    params[field] = "   "
+
+    with pytest.raises(ValidationError):
+        StockReportRunRequest(**params)
+
+
+def test_stock_report_request_allows_missing_scan_run_id() -> None:
+    request = StockReportRunRequest(
+        stock_code="002594.SZ",
+        as_of="2026-05-22",
+        source_run_id="factor",
+        score_run_id="score",
+        scan_run_id=None,
+        output_dir="data/reports/generated/ui/stock-002594-SZ",
+        run_id="stock-ui",
+        confirmed=True,
+    )
+
+    assert request.scan_run_id is None
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("cache_mode", "invalid"),
