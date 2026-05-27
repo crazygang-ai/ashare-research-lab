@@ -174,6 +174,49 @@ def test_ui_run_post_rejects_when_runner_disabled(tmp_path: Path) -> None:
     assert response.json()["error_code"] == "ui_runner_disabled"
 
 
+def test_ui_run_post_disabled_runner_takes_precedence_over_non_object_body(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {"enabled": False},
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/v1/ui/runs/stock-report", json=[])
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "ui_runner_disabled"
+
+
+def test_ui_run_post_rejects_non_object_body_with_structured_error(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {
+                "enabled": True,
+                "history_dir": str(tmp_path / "runs"),
+                "log_dir": "data/service/test-api-ui-logs/non-object-body",
+            },
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    for path in ["/api/v1/ui/runs/stock-report", "/api/v1/ui/runs/hs300-daily"]:
+        response = client.post(path, json=[])
+
+        assert response.status_code == 422
+        payload = response.json()
+        assert payload["error_code"] == "invalid_params"
+        assert "detail" not in payload
+
+
 def test_ui_run_post_rejects_invalid_stock_report_params(tmp_path: Path) -> None:
     app = create_app(
         config_path="configs/service.yaml",

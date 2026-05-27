@@ -118,9 +118,12 @@ def create_app(
         )
 
     @app.post("/api/v1/ui/runs/stock-report")
-    def ui_stock_report_run(payload: dict[str, Any]) -> JSONResponse:
+    async def ui_stock_report_run(request: Request) -> JSONResponse:
         if not config.ui_runner_enabled:
             return _error(403, "ui_runner_disabled", "UI runner is disabled.")
+        payload = await _json_object_body(request)
+        if isinstance(payload, JSONResponse):
+            return payload
         try:
             request = StockReportRunRequest(**payload)
             run = create_ui_run(config, task_type="stock-report", params=request.model_dump())
@@ -129,9 +132,12 @@ def create_app(
         return _json({"run": run.to_dict()})
 
     @app.post("/api/v1/ui/runs/hs300-daily")
-    def ui_hs300_daily_run(payload: dict[str, Any]) -> JSONResponse:
+    async def ui_hs300_daily_run(request: Request) -> JSONResponse:
         if not config.ui_runner_enabled:
             return _error(403, "ui_runner_disabled", "UI runner is disabled.")
+        payload = await _json_object_body(request)
+        if isinstance(payload, JSONResponse):
+            return payload
         try:
             request = Hs300DailyRunRequest(**payload)
             run = create_ui_run(config, task_type="hs300-daily", params=request.model_dump())
@@ -392,6 +398,16 @@ def create_app(
 
 def _json(payload: Mapping[str, Any]) -> JSONResponse:
     return JSONResponse(with_research_flags(payload))
+
+
+async def _json_object_body(request: Request) -> dict[str, Any] | JSONResponse:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        return _error(422, "invalid_params", f"Invalid JSON body: {exc.msg}")
+    if not isinstance(payload, dict):
+        return _error(422, "invalid_params", "JSON body must be an object.")
+    return payload
 
 
 def _error(status_code: int, error_code: str, message: str) -> JSONResponse:
