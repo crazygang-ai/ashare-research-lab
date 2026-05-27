@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from pydantic import ValidationError
 
 from ashare.service.artifacts import ArtifactRegistry
 from ashare.service.config import load_service_config
@@ -117,22 +118,24 @@ def create_app(
         )
 
     @app.post("/api/v1/ui/runs/stock-report")
-    def ui_stock_report_run(payload: StockReportRunRequest) -> JSONResponse:
+    def ui_stock_report_run(payload: dict[str, Any]) -> JSONResponse:
         if not config.ui_runner_enabled:
             return _error(403, "ui_runner_disabled", "UI runner is disabled.")
         try:
-            run = create_ui_run(config, task_type="stock-report", params=payload.model_dump())
-        except ValueError as exc:
+            request = StockReportRunRequest(**payload)
+            run = create_ui_run(config, task_type="stock-report", params=request.model_dump())
+        except (ValidationError, ValueError) as exc:
             return _error(422, "invalid_params", str(exc))
         return _json({"run": run.to_dict()})
 
     @app.post("/api/v1/ui/runs/hs300-daily")
-    def ui_hs300_daily_run(payload: Hs300DailyRunRequest) -> JSONResponse:
+    def ui_hs300_daily_run(payload: dict[str, Any]) -> JSONResponse:
         if not config.ui_runner_enabled:
             return _error(403, "ui_runner_disabled", "UI runner is disabled.")
         try:
-            run = create_ui_run(config, task_type="hs300-daily", params=payload.model_dump())
-        except ValueError as exc:
+            request = Hs300DailyRunRequest(**payload)
+            run = create_ui_run(config, task_type="hs300-daily", params=request.model_dump())
+        except (ValidationError, ValueError) as exc:
             return _error(422, "invalid_params", str(exc))
         return _json({"run": run.to_dict()})
 

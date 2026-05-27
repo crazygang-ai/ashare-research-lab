@@ -174,6 +174,98 @@ def test_ui_run_post_rejects_when_runner_disabled(tmp_path: Path) -> None:
     assert response.json()["error_code"] == "ui_runner_disabled"
 
 
+def test_ui_run_post_rejects_invalid_stock_report_params(tmp_path: Path) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {
+                "enabled": True,
+                "history_dir": str(tmp_path / "runs"),
+                "log_dir": "data/service/test-api-ui-logs/invalid-stock",
+            },
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    missing_required = client.post(
+        "/api/v1/ui/runs/stock-report",
+        json={
+            "stock_code": "002594.SZ",
+            "as_of": "2026-05-22",
+            "source_run_id": "factor",
+            "score_run_id": "score",
+            "confirmed": True,
+        },
+    )
+    invalid_stock_code = client.post(
+        "/api/v1/ui/runs/stock-report",
+        json={
+            "stock_code": "BADCODE",
+            "as_of": "2026-05-22",
+            "source_run_id": "factor",
+            "score_run_id": "score",
+            "output_dir": "data/reports/generated/ui/stock",
+            "run_id": "stock-ui",
+            "confirmed": True,
+        },
+    )
+
+    assert missing_required.status_code == 422
+    assert missing_required.json()["error_code"] == "invalid_params"
+    assert invalid_stock_code.status_code == 422
+    assert invalid_stock_code.json()["error_code"] == "invalid_params"
+
+
+def test_ui_run_post_rejects_invalid_hs300_daily_params(tmp_path: Path) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {
+                "enabled": True,
+                "history_dir": str(tmp_path / "runs"),
+                "log_dir": "data/service/test-api-ui-logs/invalid-hs300",
+            },
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ui/runs/hs300-daily",
+        json={
+            "as_of": "2026-05-22",
+            "stock_code": "002594.SZ",
+            "cache_mode": "invalid",
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "invalid_params"
+
+
+def test_ui_run_post_disabled_runner_takes_precedence_over_invalid_body(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        config_path="configs/service.yaml",
+        overrides={
+            "ui_runner": {"enabled": False},
+            "artifacts": {"roots": [str(tmp_path / "reports")]},
+        },
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ui/runs/hs300-daily",
+        json={"cache_mode": "invalid"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "ui_runner_disabled"
+
+
 def test_ui_run_history_endpoint_lists_created_run(tmp_path: Path) -> None:
     app = create_app(
         config_path="configs/service.yaml",
