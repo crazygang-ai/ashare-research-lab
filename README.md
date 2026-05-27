@@ -345,6 +345,31 @@ conda run -n ashare-research-lab ashare stock-report \
 - 评分结果：`data/reports/generated/byd/score/scored_candidates.csv`
 - 单股报告：`data/reports/generated/byd/stock-002594/stock_report.md`
 
+## 本地 Web UI
+
+仓库提供一个本地研究工作台前端，适合在浏览器中查看报告、artifact、UI run history，并通过受控表单创建 `stock-report` 或 HS300 daily workflow 运行。它仍然是研究复盘界面，不是交易系统；候选、评分、回测和单股报告都不是交易指令。
+
+启动后端 FastAPI：
+
+```bash
+conda run -n ashare-research-lab ashare serve
+```
+
+启动前端 Vite：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认访问地址：
+
+- 前端：`http://127.0.0.1:5173`
+- 后端 API：`http://127.0.0.1:8008`
+
+前端通过 Vite proxy 调用后端 `/api/v1/*`。`configs/service.yaml` 中 `ui_runner.enabled` 默认是 `false`，因此页面默认只读；如果需要从网页触发运行，先把它改成 `true`，再重启 `ashare serve`。UI-triggered task history 写入 `data/service/workflow-runs/`，日志写入 `data/service/workflow-logs/`，这些产物默认不入 Git。
+
 ## 常用 CLI
 
 ```bash
@@ -381,6 +406,7 @@ conda run -n ashare-research-lab ashare scan --help
 configs/       研究配置：数据、因子、验证、评分、回测、服务、审计
 data/          本地数据、DuckDB、缓存、报告输出；多数内容不入 Git
 docs/          规划、数据字典、因子定义、回测假设
+frontend/      本地 React/Vite 研究工作台
 notebooks/     研究 notebook
 scripts/       fixture 构建等辅助脚本
 skills/        Codex/agent 操作入口说明
